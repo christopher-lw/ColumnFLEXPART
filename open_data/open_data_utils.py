@@ -99,7 +99,7 @@ def plot_hwind_field(fig, ax, gdf, time, level, normalize=False, plot_range=None
     cbar.set_label("Wind velocity [m/s]")
     return fig, ax
 
-def add_world_map(fig, ax, plot_range=None, **kwargs):
+def add_world_map(fig, ax, plot_range=None, country=None, **kwargs):
     """Add world map to ax of fig
 
     Args:
@@ -116,6 +116,10 @@ def add_world_map(fig, ax, plot_range=None, **kwargs):
                 plot_range[1][0]:plot_range[1][1]]
     else:
         world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    
+    if country is not None:
+        world = world[world.name == "Australia"]
+        
     world.plot(ax=ax, **kwargs)
     return fig, ax
 
@@ -256,3 +260,25 @@ def plot_hwind_field_month(fig, ax, gdf, month, year, level, normalize=False, pl
     '''cbar = fig.colorbar(c, ax=ax)
     cbar.set_label("Wind velocity [m/s]")'''
     return fig, ax
+
+def avg_by_time(dataset, avg_index=2):
+    """Extract data form xarray of e.g. obspack data and avereage over  year/month/days.. according to avg index 1/2/3... respectively 
+
+    Args:
+        dataset (xarray.Dataset): Dataset to unpack and average.
+        avg_index (int, optional): Specification over time to average over (years/months/days.. according to avg index 1/2/3... respectively). Defaults to 2.
+
+    Returns:
+        numpy.ndarray: averaged CO2 values
+        numpy.ndarray with numpy.datetime64: times of averages (month and year for avg_index=2)
+    """    
+    keys = ["Y", "M", "D", "h", "m", "s"]
+    v_list = []
+    t_list = []
+    t, ind = np.unique(dataset.time_components.values[:,:avg_index], axis=0, return_index=True)
+    for i in range(len(t)-1):
+        
+        t_list.append(dataset.time.values[ind[i]].astype("datetime64[{}]".format(keys[avg_index-1])))
+        v = np.mean(dataset.value.values[ind[i]: ind[i+1]])
+        v_list.append(v)
+    return np.array(v_list), np.array(t_list)
