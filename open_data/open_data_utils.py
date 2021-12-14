@@ -261,12 +261,13 @@ def plot_hwind_field_month(fig, ax, gdf, month, year, level, normalize=False, pl
     cbar.set_label("Wind velocity [m/s]")'''
     return fig, ax
 
-def avg_by_time(dataset, avg_index=2):
+def avg_by_time(dataset, avg_index=2, err_mode="std_err"):
     """Extract data form xarray of e.g. obspack data and avereage over  year/month/days.. according to avg index 1/2/3... respectively 
 
     Args:
         dataset (xarray.Dataset): Dataset to unpack and average.
         avg_index (int, optional): Specification over time to average over (years/months/days.. according to avg index 1/2/3... respectively). Defaults to 2.
+        err_mode (str): Choose from: "std_err" (for calculation from data error), "std_err" (for std of averaged data). Defaults to "std_err".
 
     Returns:
         numpy.ndarray: averaged CO2 values
@@ -281,10 +282,15 @@ def avg_by_time(dataset, avg_index=2):
     err_flag = False
     for i in range(len(t)-1):
         err = None
-        try:
-            err = np.mean(dataset.value_std_dev.values[ind[i]: ind[i+1]])/np.sqrt(ind[i+1]-ind[i])
-        except AttributeError:
-            err_flag = True
+
+        if err_mode == "std_err":
+            try:
+                err = np.mean(dataset.value_std_dev.values[ind[i]: ind[i+1]])/np.sqrt(ind[i+1]-ind[i])
+            except AttributeError:
+                err_flag = True
+        elif err_mode == "std_dev":
+            err = np.std(dataset.value.values[ind[i]: ind[i+1]])
+
         err_list.append(err)
         t_list.append(dataset.time.values[ind[i]].astype("datetime64[{}]".format(keys[avg_index-1])))
         v = np.mean(dataset.value.values[ind[i]: ind[i+1]])
