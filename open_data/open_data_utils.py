@@ -270,15 +270,24 @@ def avg_by_time(dataset, avg_index=2):
 
     Returns:
         numpy.ndarray: averaged CO2 values
+        numpy.ndarray: standard error of values
         numpy.ndarray with numpy.datetime64: times of averages (month and year for avg_index=2)
     """    
     keys = ["Y", "M", "D", "h", "m", "s"]
     v_list = []
+    err_list = []
     t_list = []
     t, ind = np.unique(dataset.time_components.values[:,:avg_index], axis=0, return_index=True)
+    err_flag = False
     for i in range(len(t)-1):
-        
+        err = None
+        try:
+            err = np.mean(dataset.value_std_dev.values[ind[i]: ind[i+1]])/np.sqrt(ind[i+1]-ind[i])
+        except AttributeError:
+            err_flag = True
+        err_list.append(err)
         t_list.append(dataset.time.values[ind[i]].astype("datetime64[{}]".format(keys[avg_index-1])))
         v = np.mean(dataset.value.values[ind[i]: ind[i+1]])
         v_list.append(v)
-    return np.array(v_list), np.array(t_list)
+    print(f"No error avaliable for data.") if err_flag else None
+    return np.array(v_list), np.array(err_list), np.array(t_list)
