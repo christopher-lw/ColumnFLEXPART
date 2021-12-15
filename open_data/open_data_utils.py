@@ -298,17 +298,28 @@ def avg_by_time(dataset, avg_index=2, err_mode="std_err"):
     print(f"No error avaliable for data.") if err_flag else None
     return np.array(v_list), np.array(err_list), np.array(t_list)
 
-def detrend_numpy(x, y, order):
-    """Detrend data with polynomial of defined order 
+def detrend_hawaii(values, times):
+    """Detrend CO2 measurement data according to Mauna Loa measurements https://gml.noaa.gov/ccgg/trends/gl_data.html
 
     Args:
-        x (list or np.ndarray): data of x axis
-        y (list or np.ndarray): data of y axis
-        order (int): order of polinomial
+        values (np.ndarray): CO2 measurements in ppm
+        times (np.datetime64): times of measurements
 
     Returns:
-        np.ndarray: detrended y data
+        np.ndarray: detrended values
     """    
-    coeff = np.polyfit(x,y,order)
-    y = y - np.polyval(coeff, x)
-    return y
+    #get data of ann means
+    data = pd.read_csv("/home/clueken/master/open_data/data/co2_annmean_gl.csv", ",", header=0)
+    #extract time of means as YYYY-07-01
+    years = data.year.to_numpy(dtype="str").astype("datetime64") + np.array("06", dtype="timedelta64[M]")
+    #extract means
+    mean = data["mean"].to_numpy()
+    #find indices thar are closest to times of data
+    ind = np.sort(np.argsort(np.abs(times[:, None] - years[None, :]), axis=-1)[:,:2], axis=-1)
+    #calculate point of interpolation
+    frac = (times - years[ind[:,0].T]) / np.array("01", dtype="timedelta64[Y]")
+    #do the interpolation
+    interpolation = mean[ind[:,0].T] + (mean[ind[:,1].T] - mean[ind[:,0].T])*frac
+    #subtract background
+    det = values - interpolation
+    return det
