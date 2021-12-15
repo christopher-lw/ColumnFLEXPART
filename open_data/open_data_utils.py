@@ -297,3 +297,18 @@ def avg_by_time(dataset, avg_index=2, err_mode="std_err"):
         v_list.append(v)
     print(f"No error avaliable for data.") if err_flag else None
     return np.array(v_list), np.array(err_list), np.array(t_list)
+
+def detrend_numpy(x, y, order):
+    """Detrend data with polynomial of defined order 
+
+    Args:
+        x (list or np.ndarray): data of x axis
+        y (list or np.ndarray): data of y axis
+        order (int): order of polinomial
+
+    Returns:
+        np.ndarray: detrended y data
+    """    
+    coeff = np.polyfit(x,y,order)
+    y = y - np.polyval(coeff, x)
+    return y
