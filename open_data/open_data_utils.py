@@ -317,7 +317,8 @@ def detrend_hawaii(values, times):
     #find indices thar are closest to times of data
     ind = np.sort(np.argsort(np.abs(times[:, None] - years[None, :]), axis=-1)[:,:2], axis=-1)
     #calculate point of interpolation
-    frac = (times - years[ind[:,0].T]) / np.array("01", dtype="timedelta64[Y]")
+    deltas = (times - years[ind[:,0].T])
+    frac = deltas / np.timedelta64(1, "Y").astype(deltas.dtype)
     #do the interpolation
     interpolation = mean[ind[:,0].T] + (mean[ind[:,1].T] - mean[ind[:,0].T])*frac
     #subtract background
