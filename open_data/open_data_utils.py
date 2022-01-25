@@ -267,7 +267,7 @@ def avg_by_time(dataset, avg_index=2, err_mode="std_err"):
     Args:
         dataset (xarray.Dataset): Dataset to unpack and average.
         avg_index (int, optional): Specification over time to average over (years/months/days.. according to avg index 1/2/3... respectively). Defaults to 2.
-        err_mode (str): Choose from: "std_err" (for calculation from data error), "std_err" (for std of averaged data). Defaults to "std_err".
+        err_mode (str): Choose from: "std_err" (for calculation from data error), "std_dev" (for std of averaged data). Defaults to "std_err".
 
     Returns:
         numpy.ndarray: averaged CO2 values
@@ -324,3 +324,26 @@ def detrend_hawaii(values, times):
     #subtract background
     det = values - interpolation
     return det
+
+    
+def merge_arange(times, values, min_time, max_time, type):
+    """Set equally distanced times and sort values to respective slots in dataframe.
+
+    Args:
+        times (numpy.ndarray): times of data
+        values (numpy.ndarray): data values
+        min_time (str): date/time from which arange starts
+        max_time (str): data/time at which arange ends
+        type (str): steps (Y, M, D, ...)
+
+    Returns:
+        pandas.DataFrame: values organized in times of np.arange(min_time, max_time)
+    """    
+    full_times = np.arange(min_time, max_time, dtype=f'datetime64[{type}]')
+    df = pd.DataFrame({"times":full_times})
+    
+    times = times.astype(f'datetime64[{type}]')
+    
+    df_val = pd.DataFrame({"times":times, "values":values})
+    df = df.merge(df_val, on="times", how="outer")
+    return df
