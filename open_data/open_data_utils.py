@@ -5,7 +5,8 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
-import seaborn as sns
+import cartopy.crs as ccrs
+import cartopy.feature as cf
 #import geoplot
 #import contextily as ctx
 
@@ -325,7 +326,6 @@ def detrend_hawaii(values, times):
     det = values - interpolation
     return det
 
-    
 def merge_arange(times, values, min_time, max_time, type):
     """Set equally distanced times and sort values to respective slots in dataframe.
 
@@ -347,3 +347,114 @@ def merge_arange(times, values, min_time, max_time, type):
     df_val = pd.DataFrame({"times":times, "values":values})
     df = df.merge(df_val, on="times", how="outer")
     return df
+
+def add_map(ax, 
+            feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]],
+            extent = None,
+            **grid_kwargs,
+           ):
+    """Add map to axes using cartopy.
+
+    Args:
+        ax (Axes): Axes to add map to
+        feature_list (list, optional): Features of cartopy to be added. Defaults to [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]].
+        extent (list, optional): list to define region ([lon1, lon2, lat1, lat2]). Defaults to None.
+
+    Returns:
+        Axes: Axes with added map
+        Gridliner: cartopy.mpl.gridliner.Gridliner for further settings
+    """    
+    ax.set_extent(extent, crs=ccrs.PlateCarree()) if extent is not None else None
+    for feature in feature_list:
+        feature, kwargs = feature if type(feature) == list else [feature, dict()]
+        ax.add_feature(feature, **kwargs)
+    grid = True
+    gl = None
+    try:
+        grid = grid_kwargs["grid"]
+        grid_kwargs.pop("grid", None)
+    except KeyError:
+        pass
+    if grid:
+        grid_kwargs =  dict(draw_labels=True, dms=True, x_inline=False, y_inline=False) if not bool(grid_kwargs) else grid_kwargs
+        gl = ax.gridlines(**grid_kwargs)
+        gl.top_labels = False
+        gl.right_labels = False
+    return ax, gl
+
+def xr_to_gdf(xarr, *data_variables, crs="EPSG:4326"):
+    """Convert xarray.DataArray to GeoDataFrame
+
+    Args:
+        xarr (DataArray): To be converted
+        *data_variables (str): data variables to be transferred to GeoDataFrame
+        crs (str, optional): Coordinate reference system for GeoDataFrame. Defaults to "EPSG:4326".
+
+    Returns:
+        GeoDataFrame: Output
+    """    
+    df = xarr.to_dataframe().reset_index()
+    gdf = gpd.GeoDataFrame(
+        df[data_variables[0]], 
+        geometry=gpd.points_from_xy(df.longitude, df.latitude), 
+        crs=crs
+    )
+    for i, dv in enumerate(data_variables):
+        if i == 0:
+            continue
+        gdf[dv] = df[dv]
+    return gdf
+
+def add_country_names(gdf):
+    """Add country names to GeaDataFrame
+
+    Args:
+        gdf (GeoDataFrame): to add country names to
+
+    Returns:
+        GeoDataFrame: with added names
+    """    
+    world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    world = gpd.GeoDataFrame(world[["name"]], geometry=world.geometry)
+    gdf = gpd.sjoin(gdf, world, how="left").drop(columns=["index_right"])
+    return gdf
+    
+def country_intersections(gdf, country, crs="EPSG:4326"):    
+    """Cut GeoDataFrame w.r.t. one country into country, , not country (rest), other countries and ocean
+
+    Args:
+        gdf (GeoDataFrame): GeoDataFrame to split up
+        country (str): Country to single out
+        crs (str, optional): Coordinate reference system. Defaults to "EPSG:4326".
+
+    Returns:
+        dict: Dict of GeoDataFrames
+    """    
+    assert country in gdf.name.values, f"No country found with name {country} in GeoDataFrame"
+    ov_count = gdf[gdf.name == country]
+    ov_rest = gdf[gdf.name != country]
+    ov_other = gdf[(gdf.name != country) & (gdf.name.notnull())]
+    ov_sea = gdf[gdf.name.isnull()]
+    ret = dict(
+        country = ov_count, 
+        rest = ov_rest, 
+        other_countries = ov_other, 
+        sea = ov_sea)
+    return ret
+
+def select_extent(xarr, lon1, lon2, lat1, lat2):
+    """Select extent of xarray.DataArray with geological data
+
+    Args:
+        xarr (xarray.DataArray): ...returns
+        lon1 (float): left
+        lon2 (float): right
+        lat1 (float): lower
+        lat2 (float): upper
+
+    Returns:
+        xarray.DataArray: cut xarray
+    """    
+    xarr = xarr.where((xarr.longitude >= lon1) & (xarr.longitude <= lon2), drop=True)
+    xarr = xarr.where((xarr.latitude >= lat1) & (xarr.latitude <= lat2), drop=True)
+    return xarr
