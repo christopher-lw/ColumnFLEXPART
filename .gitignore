@@ -11,4 +11,6 @@ open_data/figures/*
 open_data/data/*
 open_data/.ipynb_checkpoints
 open_data/__pycache__
+open_data/animatioins/*
+flex_release/__pycache__
 !open_data/data/co2_annmean_gl.csv
