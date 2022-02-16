@@ -37,7 +37,7 @@ if __name__ == "__main__":
                 lat1, lat2, z1, z2, zkind, mass, parts, comment))
     
     print(f"Total number of particles: {np.sum(part_nums)}")
-
+    
     with open(os.path.join(args.out_path,'RELEASES'), 'w') as f:
         for item in RELEASES:
             f.write("%s\n" % item)
