@@ -26,15 +26,17 @@ def pressure_factor(
     factor = np.exp(-g * M * (h - hb)/(R * Tb))
     return factor
 
-def load_header():
+def load_header(species=41):
     """Load header for RELEASE file
-
+    Args:
+        species (int): index of species to use in run
     Returns:
         list: List of lines in header for RELEASE file
     """    
     header_path = "dummies/HEADER_dummy.txt"
     with open(header_path) as f:
         header = f.read().splitlines()
+    header[-2] = header[-2].replace("#", f"{species}")
     return header
 
 def load_dummy():
@@ -79,3 +81,122 @@ def write_to_dummy(date1, time1, date2, time2, lon1, lon2,
     
     return dummy
 
+def setup_column(config):
+
+    mode = config["column_mode"]
+    assert mode in ["wu", "pressure_full", "pressure_wu"], f"Only possible column_modes: wu, pressure_full, pressure_wu. You entered: {mode}"
+    
+    if mode == "wu":
+        assert set(["regions", "dh", "dn"]).issubset(config.keys()), "For column mode wu give argumnets regions, dh, dn."
+        
+        regions = config["regions"]
+        dh = config["dh"]
+        dn = config["dn"]
+
+        if not isinstance(dh, list): dh = [dh for i in range(len(regions)-1)] 
+        if not isinstance(dn, list): dn = [dn for i in range(len(regions)-1)] 
+
+        assert len(regions) == len(dh)+1, f"Incompatible shapes of regions and dh. Required: dh == region-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
+        assert len(regions) == len(dn)+1, f"Incompatible shapes of regions and dn. Required: dn == region-1 not len(regions)={len(regions)} and len(dn)={len(dn)} (give single value as float not list)"
+        
+        height = regions[0]*1e3
+        height_levels = [height]
+        part_nums = []
+        
+
+        for i, region in enumerate(regions[1:]):
+            while height < region*1e3:
+                height += dh[i]
+                height_levels.append(height)
+                part_nums.append(dn[i])
+                 
+        height_levels = np.array(height_levels)
+        part_nums = np.array(part_nums)
+    
+    elif mode == "pressure_full":
+        assert set(["regions", "lowest_region_n", "dh"]).issubset(config.keys()), "For column mode wu give argumnets regions, lowest_region_n, dh."
+        
+        regions = config["regions"]
+        dh = config["dh"]
+        lowest_region_n = config["lowest_region_n"]
+
+        if not isinstance(dh, list): dh = [dh for i in range(len(regions)-1)]
+        assert len(regions) == len(dh)+1, f"Incompatible shapes of regions and dh. Required: dh == region-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
+
+        height = regions[0]*1e3
+        height_levels = [height]
+        for i, region in enumerate(regions[1:]):
+            while height < region*1e3:
+                height += dh[i]
+                height_levels.append(height)
+        
+        height_levels = np.array(height_levels)
+        
+        diff_heights = height_levels[1:] - height_levels[:-1]  
+        mid_heights = (height_levels[:-1] + height_levels[1:])/2
+        factors = pressure_factor(mid_heights)
+        norm = factors[mid_heights <= regions[1]*1e3].sum()
+        factors = factors/norm * diff_heights/dh[0]
+        part_nums = lowest_region_n * factors
+        part_nums = part_nums.round(0).astype(int)
+
+    elif mode == "pressure_wu":
+        assert set(["regions", "region_n", "dh"]).issubset(config.keys()), "For column mode wu give argumnets regions, region_n, dh."
+
+        regions = config["regions"]
+        dh = config["dh"]
+        region_n = config["region_n"]
+
+        if not isinstance(dh, list): dh = [dh for i in range(len(regions)-1)]
+        assert len(regions) == len(dh)+1, f"Incompatible shapes of regions and dh. Required: len(dh) == len(region)-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
+        assert len(regions) == len(region_n)+1, f"Incompatible shapes of regions and region_n. Required: len(region_n) == len(region-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
+
+        height = regions[0]*1e3
+        height_levels = [height]
+        part_nums = []
+        for i, region in enumerate(regions[1:]):
+            new_heights = []
+            while height < region*1e3:
+                height += dh[i]
+                new_heights.append(height)
+            height_levels.extend(new_heights)
+            
+            factors = pressure_factor(np.array(new_heights))
+            factors = factors/np.sum(factors)
+            part_nums.extend(list(np.array(region_n[i]) * factors))
+        
+        height_levels = np.array(height_levels)
+        part_nums = np.array(part_nums).round(0).astype(int)
+
+    return height_levels, part_nums
+
+def setup_times(config):
+    if not config["times_from_file"]:
+        times = config["times"]
+
+    else:
+        assert False, "times_from_file not yet implemented"
+        assert "times_file_path" in config.keys(), "First set times_file_path in config or set times_from_file to 'true'"
+        with open(config["times_file_path"], "r") as f:
+            lines = f.read().splitlines()
+
+        times = []
+        for line in lines:
+            times.append([line.split(",")])
+    return times
+
+def setup_coords(config):
+    if not config["coords_from_file"]:
+        coords = config["coords"]
+
+    else:
+        assert False, "coords_from_file not yet implemented"
+        assert "coords_file_path" in config.keys(), "First set coords_file_path in config or set coords_from_file to 'true'"
+        with open(config["coords_file_path"], "r") as f:
+            lines = f.read().splitlines()
+
+        coords = []
+        for line in lines:
+            coords.append(line.split(","))
+    return coords
+    
