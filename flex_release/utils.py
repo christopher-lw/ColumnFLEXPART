@@ -81,95 +81,6 @@ def write_to_dummy(date1, time1, date2, time2, lon1, lon2,
     
     return dummy
 
-def setup_column(config):
-
-    mode = config["column_mode"]
-    assert mode in ["wu", "pressure_full", "pressure_wu"], f"Only possible column_modes: wu, pressure_full, pressure_wu. You entered: {mode}"
-    
-    if mode == "wu":
-        assert set(["regions", "dh", "dn"]).issubset(config.keys()), "For column mode wu give argumnets regions, dh, dn."
-        
-        regions = config["regions"]
-        dh = config["dh"]
-        dn = config["dn"]
-
-        if not isinstance(dh, list): dh = [dh for i in range(len(regions)-1)] 
-        if not isinstance(dn, list): dn = [dn for i in range(len(regions)-1)] 
-
-        assert len(regions) == len(dh)+1, f"Incompatible shapes of regions and dh. Required: dh == region-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
-        assert len(regions) == len(dn)+1, f"Incompatible shapes of regions and dn. Required: dn == region-1 not len(regions)={len(regions)} and len(dn)={len(dn)} (give single value as float not list)"
-        
-        height = regions[0]*1e3
-        height_levels = [height]
-        part_nums = []
-        
-
-        for i, region in enumerate(regions[1:]):
-            while height < region*1e3:
-                height += dh[i]
-                height_levels.append(height)
-                part_nums.append(dn[i])
-                 
-        height_levels = np.array(height_levels)
-        part_nums = np.array(part_nums)
-    
-    elif mode == "pressure_full":
-        assert set(["regions", "lowest_region_n", "dh"]).issubset(config.keys()), "For column mode wu give argumnets regions, lowest_region_n, dh."
-        
-        regions = config["regions"]
-        dh = config["dh"]
-        lowest_region_n = config["lowest_region_n"]
-
-        if not isinstance(dh, list): dh = [dh for i in range(len(regions)-1)]
-        assert len(regions) == len(dh)+1, f"Incompatible shapes of regions and dh. Required: dh == region-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
-
-        height = regions[0]*1e3
-        height_levels = [height]
-        for i, region in enumerate(regions[1:]):
-            while height < region*1e3:
-                height += dh[i]
-                height_levels.append(height)
-        
-        height_levels = np.array(height_levels)
-        
-        diff_heights = height_levels[1:] - height_levels[:-1]  
-        mid_heights = (height_levels[:-1] + height_levels[1:])/2
-        factors = pressure_factor(mid_heights)
-        norm = factors[mid_heights <= regions[1]*1e3].sum()
-        factors = factors/norm * diff_heights/dh[0]
-        part_nums = lowest_region_n * factors
-        part_nums = part_nums.round(0).astype(int)
-
-    elif mode == "pressure_wu":
-        assert set(["regions", "region_n", "dh"]).issubset(config.keys()), "For column mode wu give argumnets regions, region_n, dh."
-
-        regions = config["regions"]
-        dh = config["dh"]
-        region_n = config["region_n"]
-
-        if not isinstance(dh, list): dh = [dh for i in range(len(regions)-1)]
-        assert len(regions) == len(dh)+1, f"Incompatible shapes of regions and dh. Required: len(dh) == len(region)-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
-        assert len(regions) == len(region_n)+1, f"Incompatible shapes of regions and region_n. Required: len(region_n) == len(region-1 not len(regions)={len(regions)} and len(dh)={len(dh)} (give single value as float not list)"
-
-        height = regions[0]*1e3
-        height_levels = [height]
-        part_nums = []
-        for i, region in enumerate(regions[1:]):
-            new_heights = []
-            while height < region*1e3:
-                height += dh[i]
-                new_heights.append(height)
-            height_levels.extend(new_heights)
-            
-            factors = pressure_factor(np.array(new_heights))
-            factors = factors/np.sum(factors)
-            part_nums.extend(list(np.array(region_n[i]) * factors))
-        
-        height_levels = np.array(height_levels)
-        part_nums = np.array(part_nums).round(0).astype(int)
-
-    return height_levels, part_nums
-
 def setup_times(config):
     if not config["times_from_file"]:
         times = config["times"]
@@ -199,4 +110,101 @@ def setup_coords(config):
         for line in lines:
             coords.append(line.split(","))
     return coords
+
+class WuColumnSetup():
+    def __init__(self, config):
+        self.config = config
+        self.regions = config["regions"]
+        self.dh = config["dh"]
+        self.height = self.regions[0]*1e3
+        self.height_levels = [self.height]
+        self.part_nums = []
+        self.new_part_nums = []
+        self.new_heights = []
+        
+        self.prepare_dh()
+        self.prepare_config()
+        self.run()
+
+    def run(self):
+        for i, region in enumerate(self.regions[1:]):
+            self.new_heights = []
+            self.new_part_nums = []
+            while self.height < region*1e3:
+                self.get_height(i)
+                self.add_new_height()
+                self.add_part_nums(i)
+            self.extend_height_levels()
+            self.process_part_nums(i)
+            self.extend_part_nums()
+        
+        self.height_levels = np.array(self.height_levels)
+        self.part_nums = np.array(self.part_nums).round(0).astype(int)
     
+    def prepare_config(self):
+        if not isinstance(self.config["dn"], list): self.config["dn"] = [self.config["dn"] for i in range(len(self.regions)-1)]
+
+    def prepare_dh(self):
+        if not isinstance(self.dh, list): self.dh = [self.dh for i in range(len(self.regions)-1)]
+    
+    def add_new_height(self):
+        self.new_heights.append(self.height)
+    
+    def get_height(self, i):
+        self.height += self.dh[i]
+    
+    def add_part_nums(self, i):
+        self.part_nums.append(self.config["dn"][i])
+    
+    def extend_height_levels(self):
+        self.height_levels.extend(self.new_heights)
+    
+    def process_part_nums(self, i):
+        pass
+    
+    def extend_part_nums(self):
+        self.part_nums.extend(self.new_part_nums)
+
+class PressureColumnSetup(WuColumnSetup):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def process_part_nums(self, i):
+        if i == len(self.regions)-2:
+            height_levels = np.array(self.height_levels)
+            diff_heights = height_levels[1:] - height_levels[:-1]
+            mid_heights = (height_levels[:-1] + height_levels[1:])/2
+            factors = pressure_factor(mid_heights)
+            norm = factors[mid_heights <= self.regions[1]*1e3].sum()
+            factors = factors/norm * diff_heights/self.dh[0]
+            self.new_part_nums = list(self.config["lowest_region_n"] * factors)
+    
+    def add_part_nums(self, i):
+        pass
+    
+    def prepare_config(self):
+        pass
+
+class PressureWuColumnSetup(WuColumnSetup):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def process_part_nums(self, i):
+        factors = pressure_factor(np.array(self.new_heights))
+        factors = factors/np.sum(factors)
+        self.new_part_nums = list(np.array(self.config["region_n"][i]) * factors)
+
+    def add_part_nums(self, i):
+        pass
+    
+    def prepare_config(self):
+        pass
+
+def setup_column(config):
+    if config["column_mode"] == "wu":
+        setup = WuColumnSetup(config)
+    elif config["column_mode"] == "pressure":
+        setup = PressureColumnSetup(config)
+    elif config["column_mode"] == "pressure_wu":
+        setup = PressureWuColumnSetup(config)
+    return setup.height_levels, setup.part_nums

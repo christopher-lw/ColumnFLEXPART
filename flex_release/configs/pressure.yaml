@@ -7,7 +7,7 @@ times_file_path: ""
 times: [["20150101", "000000", "20150101", "000001"]] # will be ignored if read_from_file: true
 
 # for height profile
-column_mode: "pressure_full" # "pressure_pure" "pressure_wu"
+column_mode: "pressure" # "wu" "pressure_wu"
 regions: [0, 3, 6]
 dh: [100, 500]
 lowest_region_n: 3000
