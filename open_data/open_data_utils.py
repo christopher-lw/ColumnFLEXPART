@@ -7,8 +7,28 @@ from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cf
+from functools import lru_cache
 #import geoplot
 #import contextily as ctx
+
+def to_tuple(convert_arg, convert_ind):
+    def to_tuple_inner(function):
+        def new_function(*args, **kwargs):
+            args=list(args)
+            for i, arg in enumerate(args):
+                if i in convert_ind:
+                    if isinstance(arg, int):
+                        arg = [arg]
+                    args[i] = tuple(arg)
+            for i, (key, value) in enumerate(kwargs.items()):
+                if key in convert_arg:
+                    if isinstance(value, int):
+                        value = [value]
+                    kwargs[key] = tuple(value)
+            args = tuple(args)
+            return function(*args, **kwargs)
+        return new_function
+    return to_tuple_inner
 
 def load_era_to_gdf(file, data_keys=["u","v","w"], coarsen=None):
     '''
@@ -348,40 +368,6 @@ def merge_arange(times, values, min_time, max_time, type):
     df = df.merge(df_val, on="times", how="outer")
     return df
 
-def add_map(ax, 
-            feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]],
-            extent = None,
-            **grid_kwargs,
-           ):
-    """Add map to axes using cartopy.
-
-    Args:
-        ax (Axes): Axes to add map to
-        feature_list (list, optional): Features of cartopy to be added. Defaults to [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]].
-        extent (list, optional): list to define region ([lon1, lon2, lat1, lat2]). Defaults to None.
-
-    Returns:
-        Axes: Axes with added map
-        Gridliner: cartopy.mpl.gridliner.Gridliner for further settings
-    """    
-    ax.set_extent(extent, crs=ccrs.PlateCarree()) if extent is not None else None
-    for feature in feature_list:
-        feature, kwargs = feature if type(feature) == list else [feature, dict()]
-        ax.add_feature(feature, **kwargs)
-    grid = True
-    gl = None
-    try:
-        grid = grid_kwargs["grid"]
-        grid_kwargs.pop("grid", None)
-    except KeyError:
-        pass
-    if grid:
-        grid_kwargs =  dict(draw_labels=True, dms=True, x_inline=False, y_inline=False) if not bool(grid_kwargs) else grid_kwargs
-        gl = ax.gridlines(**grid_kwargs)
-        gl.top_labels = False
-        gl.right_labels = False
-    return ax, gl
-
 def xr_to_gdf(xarr, *data_variables, crs="EPSG:4326"):
     """Convert xarray.DataArray to GeoDataFrame
 
@@ -458,3 +444,243 @@ def select_extent(xarr, lon1, lon2, lat1, lat2):
     xarr = xarr.where((xarr.longitude >= lon1) & (xarr.longitude <= lon2), drop=True)
     xarr = xarr.where((xarr.latitude >= lat1) & (xarr.latitude <= lat2), drop=True)
     return xarr
+
+class FlexDataset():
+    """Class to handle nc output files of FLEXPART
+    """    
+    def __init__(self, nc_path, extent=[-180, 180, -90, 90], datakey="spec001_mr", with_footprints=True):
+        self.DataSet = xr.open_dataset(nc_path)
+        self.directory, self.file = nc_path.rsplit("/", 1)
+        self.DataArrays = []
+        self.extent = extent
+        self.Footprints = []
+        self.split_by_station(datakey)
+        self.plot_cache=dict()
+        
+        if with_footprints:
+            self.get_Footprints()
+    
+    def plot(self, ax, arr_ind, t_ind, release_ind, plot_func=None, with_loops=True, **kwargs):
+        """Plots one DataArray by index at sum of times in t_ind and release_ind
+
+        Args:
+            ax (Axes): Axes to plot on
+            arr_ind (int/list): Index of DataArray to plot
+            t_ind (int/list): time indices
+            release_ind (int/list): release indices
+            plot_func (str, optional): Name of plotfunction to be used. Defaults to None.
+            with_loops (bool, optional): If true sum_loop will be used to calculate sums to save memory. Defaults to True.
+
+        Returns:
+            Axes: Axes with plot
+        """        
+        if isinstance(t_ind, int): t_ind = [t_ind]
+        if release_ind == "all": release_ind = list(np.arange(len(arr.time)))
+        if isinstance(release_ind, int): release_ind = [release_ind]
+        if f"{arr_ind}{t_ind}{release_ind}" in self.plot_cache.keys():
+            xarr = self.load_from_cache(arr_ind, t_ind, release_ind)
+        else:
+            if with_loops:
+                xarr = self.sum_loop(arr_ind, t_ind, release_ind)
+            else:
+                xarr = self.DataArrays[arr_ind][dict(time=t_ind, pointspec=release_ind)]
+                xarr = xarr.sum(dim=["time", "pointspec"])
+
+            xarr = xarr.where(xarr != 0)[:,:,...]
+            self.cache(xarr, arr_ind, t_ind, release_ind)
+        if plot_func is None:
+            xarr.plot(ax=ax, **kwargs)
+        else:
+            getattr(xarr.plot, plot_func)(ax=ax, **kwargs)
+        return ax
+        
+    
+    def plot_footprint(self, ax, ind, plot_func=None, **kwargs):
+        """Plots Footprint of a station with index index
+
+        Args:
+            ax (Axes): Axes to plot on
+            ind (int): Index of the station
+            plot_func (str, optional): Name of plotfunction to use. Defaults to None.
+
+        Returns:
+            Axes: Axes with plot
+        """        
+        if self.Footprints == []:
+            self.get_Footprints()
+        fp = self.Footprints[ind].where(self.Footprints[ind]!=0)[0,0,...]
+        if plot_func is None:
+            fp.plot(ax=ax, **kwargs)
+        else:
+            getattr(fp.plot, plot_func)(ax=ax, **kwargs)
+        return ax
+    
+    def add_map(self, ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]],
+                **grid_kwargs,
+               ):
+        """Add map to axes using cartopy.
+
+        Args:
+            ax (Axes): Axes to add map to
+            feature_list (list, optional): Features of cartopy to be added. Defaults to [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]].
+            extent (list, optional): list to define region ([lon1, lon2, lat1, lat2]). Defaults to None.
+
+        Returns:
+            Axes: Axes with added map
+            Gridliner: cartopy.mpl.gridliner.Gridliner for further settings
+        """    
+        ax.set_extent(self.extent, crs=ccrs.PlateCarree()) if self.extent is not None else None
+        for feature in feature_list:
+            feature, kwargs = feature if isinstance(feature, list) else [feature, dict()]
+            ax.add_feature(feature, **kwargs)
+        grid = True
+        gl = None
+        try:
+            grid = grid_kwargs["grid"]
+            grid_kwargs.pop("grid", None)
+        except KeyError:
+            pass
+        if grid:
+            grid_kwargs =  dict(draw_labels=True, dms=True, x_inline=False, y_inline=False) if not bool(grid_kwargs) else grid_kwargs
+            gl = ax.gridlines(**grid_kwargs)
+            gl.top_labels = False
+            gl.right_labels = False
+        
+        return ax, gl
+    
+    def select_extent(self, xarr):
+        """Select extent of xarray.DataArray with geological data
+
+        Args:
+            xarr (xarray.DataArray): ...returns
+            lon1 (float): left
+            lon2 (float): right
+            lat1 (float): lower
+            lat2 (float): upper
+
+        Returns:
+            xarray.DataArray: cut xarray
+        """    
+        lon1, lon2, lat1, lat2 = self.extent
+        xarr = xarr.where((xarr.longitude >= lon1) & (xarr.longitude <= lon2), drop=True)
+        xarr = xarr.where((xarr.latitude >= lat1) & (xarr.latitude <= lat2), drop=True)
+        return xarr
+    
+    def split_by_station(self, datakey):
+        """Splits xarray.Dataset into xarray.Dataarrays according to value in datakey
+
+        Args:
+            datakey (str): Name of key to split by
+        """        
+        values = np.unique(self.DataSet.RELLNG1.values)
+        index_sets = []
+        for val in values:
+            index_sets.append(np.concatenate(np.argwhere(self.DataSet.RELLNG1.values == val)))
+        DataArray = self.DataSet[datakey]
+        for ind in index_sets:
+            self.DataArrays.append(DataArray.isel(dict(pointspec = ind)))
+    
+    @to_tuple(["time", "pointspec"],[2,3])
+    @cache
+    def sum_loop(self, arr_ind, time, pointspec):
+        """Performs sum over time or pointspec axis of DataArray with arr_ind.
+
+        Args:
+            arr_ind (int): DataArray index
+            time (list): list of times to sum over points
+            pointspec (list): list of releases to sum over
+
+        Returns:
+            DataArray: summed Array
+        """
+        xarr = self.DataArrays[arr_ind]
+        xarr_time_sum = 0
+        for i in time:
+            xarr_time_sum = xarr_time_sum + xarr.isel(dict(time=[i]))[:,:,0,...]
+        xarr_sum = 0
+        for i in pointspec:
+            xarr_sum = xarr_sum + xarr_time_sum.isel(dict(pointspec=[i]))[:,0,...]
+        return xarr_sum
+
+    def save_Footprints(self, include_sums=True, with_loops=True):
+        """Saves Footprints
+
+        Args:
+            include_sums (bool, optional): _description_. Defaults to True.
+            with_loops (bool, optional): _description_. Defaults to True.
+        """        
+        sum_path = os.path.join(self.directory, "Footprint_")
+        for i, fp in enumerate(self.Footprints):
+            fp.to_netcdf(f"{sum_path}{i}.nc")
+    
+    def calc_Footprints(self, with_loops=True):
+        """Calculates Footprints
+
+        Args:
+            with_loops (bool, optional): If True sum_loop is used. Defaults to True.
+        """        
+        self.Footprints = []
+        for i, xarr in enumerate(self.DataArrays):
+            if with_loops:
+                xarr_sum = self.sum_loop(i, np.arange(len(xarr.time)), np.arange(len(xarr.pointspec)))
+            else: 
+                xarr_sum = xarr.sum(dim=["time", "pointspec"])
+            self.Footprints.append(xarr_sum)
+    
+    def load_Footprints(self):
+        """Loads Footprints from directory of DataSet data
+        """
+        self.Footprints = []
+        files = os.listdir(self.directory)
+        path = os.path.join(self.directory, "Footprint_0.nc")
+        if os.path.exists(path):
+            max_ind = 0  
+            for f in files:
+                if "Footprint" in f:
+                    print(f"Found {f}")
+                    ind = int(f.rsplit("_")[-1][0])
+                    max_ind = ind if ind > max_ind else max_ind
+            for i in range(max_ind+1):
+                self.Footprints.append(xr.load_dataarray(os.path.join(self.directory, f"Footprint_{i}.nc")))
+        else:
+            raise FileNotFoundError
+        
+    def get_Footprints(self):
+        """Get footprints from either loading of calculation
+        """        
+        try:
+            self.load_Footprints()
+        except FileNotFoundError:
+            print("No total footprints found to load. Calculation...")
+            self.calc_Footprints()
+            self.save_Footprints()
+            print("Done")
+    
+    def cache(self, xarr, arr_ind, t_ind, release_ind):
+        """Cache some data for plotting
+
+        Args:
+            xarr (DataArray): Array to cache
+            arr_ind (int): index of DataArray
+            t_ind (int/list): list of times (to identify data)
+            release_ind (int/list): lsit of releases (to identify data)
+        """        
+        key = f"{arr_ind}{t_ind}{release_ind}"
+        self.plot_cache[key] = xarr
+        if len(self.plot_cache) > 3:
+            self.plot_cache.pop(list(self.plot_cache.keys())[0])
+            
+    def load_from_cache(self, arr_ind, t_ind, release_ind):
+        """Loads xarray.DataArray from Cache by key
+
+        Args:
+            arr_ind (int): Index of DataArray to be loaded
+            t_ind (int/list): list of times of data to be loaded
+            release_ind (int/list): list of releases to be loaded
+
+        Returns:
+            DataArray: Loaded Array
+        """        
+        key = f"{arr_ind}{t_ind}{release_ind}"
+        xarr = self.plot_cache[key]
+        return xarr
