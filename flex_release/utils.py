@@ -111,7 +111,7 @@ def setup_coords(config):
             coords.append(line.split(","))
     return coords
 
-class WuColumnSetup():
+class ColumnSetup():
     def __init__(self, config):
         self.config = config
         self.regions = config["regions"]
@@ -140,32 +140,43 @@ class WuColumnSetup():
         
         self.height_levels = np.array(self.height_levels)
         self.part_nums = np.array(self.part_nums).round(0).astype(int)
-    
-    def prepare_config(self):
-        if not isinstance(self.config["dn"], list): self.config["dn"] = [self.config["dn"] for i in range(len(self.regions)-1)]
+
 
     def prepare_dh(self):
         if not isinstance(self.dh, list): self.dh = [self.dh for i in range(len(self.regions)-1)]
-    
+
     def add_new_height(self):
         self.new_heights.append(self.height)
-    
+
     def get_height(self, i):
         self.height += self.dh[i]
-    
-    def add_part_nums(self, i):
-        self.part_nums.append(self.config["dn"][i])
-    
+
     def extend_height_levels(self):
         self.height_levels.extend(self.new_heights)
+
+    def extend_part_nums(self):
+        self.part_nums.extend(self.new_part_nums)
+    
+    def prepare_config(self):
+        pass
     
     def process_part_nums(self, i):
         pass
     
-    def extend_part_nums(self):
-        self.part_nums.extend(self.new_part_nums)
+    def add_part_nums(self, i):
+        pass
 
-class PressureColumnSetup(WuColumnSetup):
+class WuColumnSetup(ColumnSetup):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def prepare_config(self):
+        if not isinstance(self.config["dn"], list): self.config["dn"] = [self.config["dn"] for i in range(len(self.regions)-1)]
+    
+    def add_part_nums(self, i):
+        self.part_nums.append(self.config["dn"][i])
+
+class PressureColumnSetup(ColumnSetup):
     def __init__(self, config):
         super().__init__(config)
 
@@ -178,14 +189,8 @@ class PressureColumnSetup(WuColumnSetup):
             norm = factors[mid_heights <= self.regions[1]*1e3].sum()
             factors = factors/norm * diff_heights/self.dh[0]
             self.new_part_nums = list(self.config["lowest_region_n"] * factors)
-    
-    def add_part_nums(self, i):
-        pass
-    
-    def prepare_config(self):
-        pass
 
-class PressureWuColumnSetup(WuColumnSetup):
+class PressureWuColumnSetup(ColumnSetup):
     def __init__(self, config):
         super().__init__(config)
 
@@ -193,12 +198,6 @@ class PressureWuColumnSetup(WuColumnSetup):
         factors = pressure_factor(np.array(self.new_heights))
         factors = factors/np.sum(factors)
         self.new_part_nums = list(np.array(self.config["region_n"][i]) * factors)
-
-    def add_part_nums(self, i):
-        pass
-    
-    def prepare_config(self):
-        pass
 
 def setup_column(config):
     if config["column_mode"] == "wu":
