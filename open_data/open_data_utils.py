@@ -7,7 +7,7 @@ from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cf
-from functools import lru_cache
+from functools import cache
 #import geoplot
 #import contextily as ctx
 
@@ -448,17 +448,32 @@ def select_extent(xarr, lon1, lon2, lat1, lat2):
 class FlexDataset():
     """Class to handle nc output files of FLEXPART
     """    
-    def __init__(self, nc_path, extent=[-180, 180, -90, 90], datakey="spec001_mr", with_footprints=True):
-        self.DataSet = xr.open_dataset(nc_path)
+    def __init__(self, nc_path, extent=[-180, 180, -90, 90], datakey="spec001_mr", chunks={}, with_footprints=True):
+        self._chunks_ = chunks
+        self._datakey_ = datakey
+        self.DataSet = xr.open_dataset(nc_path, chunks=self._chunks_)
         self.directory, self.file = nc_path.rsplit("/", 1)
         self.DataArrays = []
         self.extent = extent
         self.Footprints = []
-        self.split_by_station(datakey)
-        self.plot_cache=dict()
+        self.split_by_station(self._datakey_)
         
         if with_footprints:
             self.get_Footprints()
+        self.get_chunks()
+        
+    def get_chunks(self):
+        if self._chunks_ == {}:
+            do_chunk = input("No information on chunks found! Use chunks? ([y]/n) ") or "y"
+            assert do_chunk == "y", "No chunks used. To get chunked data call get_chunks()"
+            self.set_chunks()
+    
+    def set_chunks(self):
+        print(f"Data: times: {len(self.DataSet.time)}, releases per site: {len(self.DataArrays[0].pointspec)}")
+        self._chunks_["time"] = int(input("Chunk value for time dim: "))
+        self._chunks_["pointspec"] = int(input("Chunk value for pointspec dim: "))
+        self.DataSet = xr.open_dataset(nc_path, chunks=self._chunks_)
+        self.split_by_station(self._datakey_)
     
     def plot(self, ax, arr_ind, t_ind, release_ind, plot_func=None, with_loops=True, **kwargs):
         """Plots one DataArray by index at sum of times in t_ind and release_ind
@@ -480,7 +495,9 @@ class FlexDataset():
         if f"{arr_ind}{t_ind}{release_ind}" in self.plot_cache.keys():
             xarr = self.load_from_cache(arr_ind, t_ind, release_ind)
         else:
-            if with_loops:
+            if self._chunks_ != {}:
+                xarr = self.sum_dask(arr_ind, t_ind, release_ind)
+            elif with_loops:
                 xarr = self.sum_loop(arr_ind, t_ind, release_ind)
             else:
                 xarr = self.DataArrays[arr_ind][dict(time=t_ind, pointspec=release_ind)]
@@ -571,7 +588,8 @@ class FlexDataset():
 
         Args:
             datakey (str): Name of key to split by
-        """        
+        """
+        self.DataArrays =[]   
         values = np.unique(self.DataSet.RELLNG1.values)
         index_sets = []
         for val in values:
@@ -601,6 +619,13 @@ class FlexDataset():
         for i in pointspec:
             xarr_sum = xarr_sum + xarr_time_sum.isel(dict(pointspec=[i]))[:,0,...]
         return xarr_sum
+    
+    @to_tuple(["time", "pointspec"],[2,3])
+    @cache
+    def sum_dask(self, arr_ind, time, pointspec):
+        xarr = self.DataArrays[arr_ind]
+        xarr = xarr.sum(dict(time=time, pointspec=pointspec)).compute()
+        return xarr
 
     def save_Footprints(self, include_sums=True, with_loops=True):
         """Saves Footprints
