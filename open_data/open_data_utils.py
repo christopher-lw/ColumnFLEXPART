@@ -30,6 +30,16 @@ def to_tuple(convert_arg, convert_ind):
         return new_function
     return to_tuple_inner
 
+def val_to_list(types, val, expand_to=None):
+    if not isinstance(type(types), list):
+        types = [types]
+    if type(val) in types:
+        val = [val]
+    val = list(val)
+    if expand_to is not None and len(val)==1:
+        val = val*expand_to#
+    return val
+
 def load_era_to_gdf(file, data_keys=["u","v","w"], coarsen=None):
     '''
     Returns a geodataframe with geomertry Point(long, lat) and columns: ["time", "level"] + data_keys.
@@ -448,7 +458,7 @@ def select_extent(xarr, lon1, lon2, lat1, lat2):
 class FlexDataset():
     """Class to handle nc output files of FLEXPART
     """    
-    def __init__(self, nc_path, extent=[-180, 180, -90, 90], datakey="spec001_mr", chunks=None, with_footprints=True):
+    def __init__(self, nc_path, extent=[-180, 180, -90, 90], datakey="spec001_mr", chunks=None, with_footprints=True, **kwargs):
         self._nc_path_ = nc_path
         self._chunks_ = chunks
         self._datakey_ = datakey
@@ -465,6 +475,14 @@ class FlexDataset():
         self.get_stations()
         if with_footprints:
             self.get_Footprints()
+
+        self.name = None
+        self.station_names = val_to_list(type(None), None, len(self.DataArrays))
+        self.cmaps = val_to_list(type(None), None, len(self.DataArrays))
+        self.norm = None
+        self.set_plot_attributes(**kwargs)
+
+
         
     def get_chunks(self):
         """Gets chunk values for dask arrays
@@ -483,7 +501,25 @@ class FlexDataset():
         self._chunks_["pointspec"] = int(input("Chunk value for pointspec dim: "))
         self.DataSet = xr.open_dataset(self._nc_path_, chunks=self._chunks_)
         self.get_DataArrays(self._datakey_)
+
+    def set_plot_attributes(self, **kwargs):
+        if "name" in kwargs.keys():
+            self.name = kwargs["name"]
+        if "station_names" in kwargs.keys():
+            self.staton_names = kwargs["station_names"]
+        if "cmaps" in kwargs.keys():
+            self.cmaps = val_to_list(str, kwargs["cmaps"], len(self.DataArrays))
+        if "norm" in kwargs.keys():
+            self.norm = kwargs["norm"]
     
+    def subplots(self, *args, **kwargs):
+        default_kwargs = dict(subplot_kw=dict(projection=ccrs.PlateCarree()))
+        for key, val in kwargs.items():
+            default_kwargs[key] = val
+        kwargs = default_kwargs
+        fig, ax = plt.subplots(*args, **kwargs)
+        return fig, ax
+        
     def plot(self, ax, station, time, pointspec, plot_func=None, with_loops=True, plot_station=False, station_kwargs=dict(color="black"), **kwargs):
         """Plots one DataArray by index at sum of times in time and pointspec
 
@@ -500,8 +536,14 @@ class FlexDataset():
         Returns:
             Axes: Axes with plot
         """        
+        default_kwargs = dict(cmap=self.cmaps[station], norm=self.norm)
+        for key, val in kwargs.items():
+            default_kwargs[key] = val
+        
+        kwargs = default_kwargs
+
         if isinstance(time, int): time = [time]
-        if pointspec == "all": pointspec = list(np.arange(len(arr.time)))
+        #if pointspec == "all": pointspec = list(np.arange(len(arr.time)))
         if isinstance(pointspec, int): pointspec = [pointspec]
         else:
             xarr = self.sum(station, time, pointspec, with_loops=with_loops)
@@ -528,6 +570,12 @@ class FlexDataset():
         Returns:
             Axes: Axes with plot
         """        
+        default_kwargs = dict(cmap=self.cmaps[station], norm=self.norm)
+        for key, val in kwargs.items():
+            default_kwargs[key] = val
+        
+        kwargs = default_kwargs
+
         if self.Footprints == []:
             self.get_Footprints()
         fp = self.Footprints[station].where(self.Footprints[station]!=0)[0,0,...]
@@ -571,7 +619,7 @@ class FlexDataset():
             gl.right_labels = False
         
         return ax, gl
-    
+
     def select_extent(self, xarr):
         """Select extent of xarray.DataArray with geological data
 
@@ -705,9 +753,53 @@ class FlexDataset():
     
     def get_stations(self):
         longs, ind = np.unique(self.DataSet["RELLNG1"].values, return_index=True)
-        lats = self.DataSet["RELLAT1"][ind]
-        self.stations = list(zip(longs,lats))
+        lats = self.DataSet["RELLAT1"][ind].values
+        self.stations = np.column_stack((longs,lats))
+    
+    @to_tuple(["stations"],[1])
+    @cache
+    def vmin(self, stations=None, footprint=True, ignore_zero=True):
+
+        if stations is None:
+            stations = np.arange(len(self.stations))
         
+        data = self.Footprints
+        if not footprint:
+            data = self.DataArrays
+        
+        vmins = []
+        for i in stations:
+            values = data[i]
+            if ignore_zero:
+                values = values.where(values!=0)
+            if footprint:
+                vmins.append(np.nanmin(values.values))
+            else:
+                vmins.append(values.min().compute())
+        return np.min(vmins)
+    
+    @to_tuple(["stations"],[1])
+    @cache
+    def vmax(self, stations=None, footprint=True, ignore_zero=True):
+        
+        if stations is None:
+            stations = np.arange(len(self.stations))
+        
+        data = self.Footprints
+        if not footprint:
+            data = self.DataArrays
+        
+        vmaxs = []
+        for i in stations:
+            values = data[i]
+            if ignore_zero:
+                values = values.where(values!=0)
+            if footprint:
+                vmaxs.append(np.nanmax(values.values))
+            else:
+                vmaxs.append(values.max().compute())
+        return np.max(vmaxs)
+
 class FlexDataCollection(FlexDataset):
     def __init__(self, *args, **kwargs):
         self._paths_ = args
@@ -760,4 +852,3 @@ class FlexDataCollection(FlexDataset):
         return super().add_map(ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]], **grid_kwargs)
         
             
-
