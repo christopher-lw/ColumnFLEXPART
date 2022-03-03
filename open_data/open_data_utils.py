@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cf
 from functools import cache
+import copy
 #import geoplot
 #import contextily as ctx
 
@@ -460,7 +461,7 @@ class FlexDataset():
     """    
     def __init__(self, nc_path, extent=[-180, 180, -90, 90], datakey="spec001_mr", chunks=None, with_footprints=True, **kwargs):
         self._nc_path_ = nc_path
-        self._chunks_ = chunks
+        self._chunks_ = chunks if chunks is not None else "auto"
         self._datakey_ = datakey
         self.DataSet = xr.open_dataset(nc_path, chunks=self._chunks_)
         self.directory, self.file = nc_path.rsplit("/", 1)
@@ -471,7 +472,6 @@ class FlexDataset():
 
         self.get_DataArrays(self._datakey_)
 
-        self.get_chunks()
         self.get_stations()
         if with_footprints:
             self.get_Footprints()
@@ -482,31 +482,11 @@ class FlexDataset():
         self.norm = None
         self.set_plot_attributes(**kwargs)
 
-
-        
-    def get_chunks(self):
-        """Gets chunk values for dask arrays
-        """        
-        if self._chunks_ is None or self._chunks_ == {}:
-            do_chunk = input("No information on chunks found! Use chunks? ([y]/n) ") or "y"
-            assert do_chunk == "y", "No chunks used. To get chunked data call get_chunks()"
-            self.set_chunks()
-    
-    def set_chunks(self):
-        """Sets new values for chunks
-        """        
-        print(f"Data: times: {len(self.DataSet.time)}, releases per site: {len(self.DataArrays[0].pointspec)}")
-        self._chunks_ = {}
-        self._chunks_["time"] = int(input("Chunk value for time dim: "))
-        self._chunks_["pointspec"] = int(input("Chunk value for pointspec dim: "))
-        self.DataSet = xr.open_dataset(self._nc_path_, chunks=self._chunks_)
-        self.get_DataArrays(self._datakey_)
-
     def set_plot_attributes(self, **kwargs):
         if "name" in kwargs.keys():
             self.name = kwargs["name"]
         if "station_names" in kwargs.keys():
-            self.staton_names = kwargs["station_names"]
+            self.station_names = kwargs["station_names"]
         if "cmaps" in kwargs.keys():
             self.cmaps = val_to_list(str, kwargs["cmaps"], len(self.DataArrays))
         if "norm" in kwargs.keys():
@@ -520,7 +500,7 @@ class FlexDataset():
         fig, ax = plt.subplots(*args, **kwargs)
         return fig, ax
         
-    def plot(self, ax, station, time, pointspec, plot_func=None, with_loops=True, plot_station=False, station_kwargs=dict(color="black"), **kwargs):
+    def plot(self, ax, station, time, pointspec, plot_func=None, plot_station=False, station_kwargs=dict(color="black"), **kwargs):
         """Plots one DataArray by index at sum of times in time and pointspec
 
         Args:
@@ -529,14 +509,13 @@ class FlexDataset():
             time (int/list): time indices
             pointspec (int/list): release indices
             plot_func (str, optional): Name of plotfunction to be used. Defaults to None.
-            with_loops (bool, optional): If true sum_loop will be used to calculate sums to save memory. Defaults to True.
             plot_station (bool, optional): If true scatterplot of stations position is plotted. Defaults to True.
             station_kwargs (dict, optional): kwargs to pass to scatter for plot_station. Defauls to dict(color="black").
 
         Returns:
             Axes: Axes with plot
         """        
-        default_kwargs = dict(cmap=self.cmaps[station], norm=self.norm)
+        default_kwargs = dict(cmap=self.cmaps[station], norm=copy.copy(self.norm))
         for key, val in kwargs.items():
             default_kwargs[key] = val
         
@@ -546,7 +525,7 @@ class FlexDataset():
         #if pointspec == "all": pointspec = list(np.arange(len(arr.time)))
         if isinstance(pointspec, int): pointspec = [pointspec]
         else:
-            xarr = self.sum(station, time, pointspec, with_loops=with_loops)
+            xarr = self.sum(station, time, pointspec)
             xarr = xarr.where(xarr != 0)[:,:,...]
         if plot_func is None:
             xarr.plot(ax=ax, **kwargs)
@@ -570,7 +549,7 @@ class FlexDataset():
         Returns:
             Axes: Axes with plot
         """        
-        default_kwargs = dict(cmap=self.cmaps[station], norm=self.norm)
+        default_kwargs = dict(cmap=self.cmaps[station], norm=copy.copy(self.norm))
         for key, val in kwargs.items():
             default_kwargs[key] = val
         
@@ -649,76 +628,41 @@ class FlexDataset():
         for ind in index_sets:
             self.DataArrays.append(DataArray.isel(dict(pointspec = ind)))
     
-    def sum_loop(self, station, time, pointspec):
-        """Performs sum over time or pointspec axis of DataArray with station.
-
-        Args:
-            station (int): DataArray index
-            time (list): list of times to sum over points
-            pointspec (list): list of releases to sum over
-
-        Returns:
-            DataArray: summed Array
-        """
-        xarr = self.DataArrays[station]
-        xarr_time_sum = 0
-        for i in time:
-            xarr_time_sum = xarr_time_sum + xarr.isel(dict(time=[i]))[:,:,0,...]
-        xarr_sum = 0
-        for i in pointspec:
-            xarr_sum = xarr_sum + xarr_time_sum.isel(dict(pointspec=[i]))[:,0,...]
-        return xarr_sum
-    
-    def sum_dask(self, station, time, pointspec):
-        xarr = self.DataArrays[station]
-        xarr = xarr.sum(dict(time=time, pointspec=pointspec)).compute()
-        return xarr
-    
     @to_tuple(["time", "pointspec"],[2,3])
     @cache
-    def sum(self, station, time, pointspec, with_loops=True):
-        """Computes sum according to available modes hierarchy: dask, loops, xarray
+    def sum(self, station, time, pointspec):
+        """Computes sum with dask
 
         Args:
             station (int): Index of station
             time (list): List of indices
             pointspec (list): List of pointspec indices
-            with_loops (bool, optional): Wheter to use loop calc. Defaults to True.
 
         Returns:
             DataArray: sumemd dataarray
         """        
-        if self._chunks_ != {}:
-            xarr = self.sum_dask(station, time, pointspec)
-        elif with_loops:
-            xarr = self.sum_loop(station, time, pointspec)
-        else:
-            xarr = self.DataArrays[station][dict(time=time, pointspec=pointspec)]
-            xarr = xarr.sum(dim=["time", "pointspec"])
+        xarr = self.DataArrays[station]
+        xarr = xarr.sum(dict(time=time, pointspec=pointspec)).compute()
         return xarr
 
-    def save_Footprints(self, with_loops=True):
+    def save_Footprints(self):
         """Saves Footprints
 
         Args:
             include_sums (bool, optional): _description_. Defaults to True.
-            with_loops (bool, optional): _description_. Defaults to True.
         """        
         sum_path = os.path.join(self.directory, "Footprint_")
         for i, fp in enumerate(self.Footprints):
             fp.to_netcdf(f"{sum_path}{i}.nc")
             
     
-    def calc_Footprints(self, with_loops=True):
+    def calc_Footprints(self):
         """Calculates Footprints
-
-        Args:
-            with_loops (bool, optional): If True sum_loop is used. Defaults to True.
         """
         self.Footprints = []
         for i, xarr in enumerate(self.DataArrays):
             station, time, pointspec = i, np.arange(len(xarr.time)), np.arange(len(xarr.pointspec))
-            xarr_sum = self.sum(station, time, pointspec, with_loops)
+            xarr_sum = self.sum(station, time, pointspec)
             self.Footprints.append(xarr_sum)
     
     def load_Footprints(self):
