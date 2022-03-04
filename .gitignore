@@ -12,6 +12,8 @@ open_data/data/*
 open_data/.ipynb_checkpoints
 open_data/__pycache__
 open_data/animations/*
+open_data/dask-worker-space
+open_data/slurm*
 flex_release/__pycache__
 flex_release/output/*
 !open_data/data/co2_annmean_gl.csv
