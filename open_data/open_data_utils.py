@@ -521,12 +521,10 @@ class FlexDataset():
         
         kwargs = default_kwargs
 
-        if isinstance(time, int): time = [time]
-        #if pointspec == "all": pointspec = list(np.arange(len(arr.time)))
-        if isinstance(pointspec, int): pointspec = [pointspec]
-        else:
-            xarr = self.sum(station, time, pointspec)
-            xarr = xarr.where(xarr != 0)[:,:,...]
+        xarr = self.sum(station, time, pointspec)
+        xarr = xarr.where(xarr != 0)[:,:,...]
+        print(xarr)
+
         if plot_func is None:
             xarr.plot(ax=ax, **kwargs)
         else:
@@ -642,7 +640,9 @@ class FlexDataset():
             DataArray: sumemd dataarray
         """        
         xarr = self.DataArrays[station]
-        xarr = xarr.sum(dict(time=time, pointspec=pointspec)).compute()
+        time = list(time)
+        pointspec = list(pointspec)
+        xarr = xarr.isel(dict(time=time, pointspec=pointspec)).sum(dim=["time", "pointspec"]).compute()
         return xarr
 
     def save_Footprints(self):
