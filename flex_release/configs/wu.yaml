@@ -10,7 +10,7 @@ times: [["20091207", "205959", "20091207", "210000"], ["20091207", "205959", "20
 column_mode: "wu" # "pressure_pure" "pressure_wu"
 regions: [0, 3, 6] # in km
 dh: [100, 500] # in meters
-dn: 200
+dn: 100
 discrete: false
 
 # positions of stations
