@@ -66,6 +66,8 @@ if __name__ == "__main__":
         shutil.copyfile(os.path.join(args.release_path, rel), os.path.join(args.options_path, "RELEASES"))
         new_output_path = os.path.join(args.output_path, rel)
         os.makedirs(new_output_path, exist_ok=True)
+        if args.flex_path in new_output_path:
+            new_output_path = new_output_path.replace(args.flex_path, "./")
         paths = ""
         with open(os.path.join(args.flex_path, "pathnames")) as f:
             for i, line in enumerate(f):
@@ -85,7 +87,7 @@ if __name__ == "__main__":
             states = get_run_states()
             r_num = states.count("R")
             print(f"{r_num}/{len(states)} tasks running")
-        time.sleep(2)
+        time.sleep(5)
         
 
             

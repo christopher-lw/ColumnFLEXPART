@@ -1,0 +1,23 @@
+# for header
+species: 41
+
+# time settings
+times_from_file: false
+times_file_path: ""
+times: [["20091207", "205959", "20091207", "210000"]] # will be ignored if read_from_file: true
+
+# for height profile
+column_mode: "pressure_wu" # "pressure_pure" "pressure_wu"
+regions: [0, 3, 6]
+dh: [100, 500]
+region_n: [1667, 334]
+discrete: false
+
+# positions of stations
+coords_from_file: false
+coords_file_path: ""
+coords: [[150.878998,150.878998,-34.4059982,-34.4059982]] # will be ignored if read_from_file: true
+
+# other settings
+zkind: 1
+mass: 1

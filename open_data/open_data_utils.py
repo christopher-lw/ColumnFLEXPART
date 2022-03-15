@@ -9,6 +9,7 @@ import cartopy.crs as ccrs
 import cartopy.feature as cf
 from functools import cache
 import copy
+import datetime
 #import geoplot
 #import contextily as ctx
 
@@ -40,6 +41,12 @@ def val_to_list(types, val, expand_to=None):
     if expand_to is not None and len(val)==1:
         val = val*expand_to#
     return val
+
+def printval(inp):
+    out={}
+    exec(f"val={inp}", globals(), out)
+    out = out["val"]
+    print(f"{inp}: {out}")
 
 def load_era_to_gdf(file, data_keys=["u","v","w"], coarsen=None):
     '''
@@ -523,7 +530,6 @@ class FlexDataset():
 
         xarr = self.sum(station, time, pointspec)
         xarr = xarr.where(xarr != 0)[:,:,...]
-        print(xarr)
 
         if plot_func is None:
             xarr.plot(ax=ax, **kwargs)
@@ -795,4 +801,90 @@ class FlexDataCollection(FlexDataset):
     def add_map(self, ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]], **grid_kwargs):
         return super().add_map(ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]], **grid_kwargs)
         
+          
+def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
+
+    def barometric(a, b):
+        func = lambda x, y: x*np.exp(-(y/7800)) #Skalenhöhe von 7.8 km passt?
+        return xr.apply_ufunc(func, a, b)
+
+    def heights(p_surf, p):
+        func = lambda x, y: np.log(y/x)*(-7800) #Skalenhöhe von 7.8 km passt?
+        return xr.apply_ufunc(func, p_surf, p)
+    #-----------------------------
+    enddate = datetime.date(int(end[0:4]),int(end[5:7]),int(end[8:10]))
+    startdate = datetime.date(int(start[0:4]),int(start[5:7]),int(start[8:10]))
+
+    #test the right order of dates
+    assert enddate > startdate, 'The startdate has to be before the enddate'
+
+    #get GOSAT measurement
+    gosat_file = gosat_file+str(enddate.year)+str(enddate.month).zfill(2)+str(enddate.day).zfill(2)+'.nc'
+
+    #get TCCON data
+    DSTCCON = xr.open_mfdataset(tccon_file, combine='by_coords',decode_times = False, chunks="auto")
+
+    #get Footprint
+    if isinstance(fp_data, str):
+        DSFP = xr.open_mfdataset(fp_data, combine='by_coords', chunks="auto")
+    else:
+        DSFP = fp_data
+    #DSFP.RELZZ1.values
+
+    #read CT fluxes (dayfiles) and merge into one file
+    first = True
+    for date in pd.date_range(startdate, enddate):
+        fileCT = ct_file+str(date.year)+str(date.month).zfill(2)+str(date.day).zfill(2)+'.nc'
+        DSCTfluxday = xr.open_mfdataset(fileCT, combine='by_coords',drop_variables = 'time_components', chunks="auto")
+        if first:
+            first = False
+            DSCTflux = DSCTfluxday
+        else:
+            DSCTflux = xr.concat([DSCTflux,DSCTfluxday],dim = 'time')
+        
+    #calculate Satelite CO2 enhancement
             
+    #sum flux components: 
+    DSCT_totalflux = DSCTflux.bio_flux_opt+DSCTflux.ocn_flux_opt+DSCTflux.fossil_flux_imp+DSCTflux.fire_flux_imp
+    DSCT_totalflux.name = 'total_flux'
+
+    #can be deleted when footprint has -179.5 coordinate
+    DSCT_totalflux = DSCT_totalflux[:,:,1:]
+
+    #from .interp can be deleted as soon as FP dim fits CTFlux dim, layers repeated???? therfore only first 36
+    #FP = DSFP.spec001_mr[0,0:36,:,0,:,:].interp(latitude=DSCT_totalflux["latitude"], longitude=DSCT_totalflux["longitude"], time = DSCT_totalflux["time"])
+    #FP = DSFP.spec001_mr[0,0:36,:,0,:,:].interp(time = DSCT_totalflux["time"])
+    FP = DSFP.spec001_mr[0,:,:,0,:,:]
+    dt = np.timedelta64(90,'m')
+    FP = FP.assign_coords(time=(FP.time + dt))
+    #flip time axis
+    FP = FP.sortby('time')
+
+    #selct times of Footprint in fluxes
+    DSCT_totalflux = DSCT_totalflux.sel(time=slice(FP.time.min(),FP.time.max()))
+
+    #get pressure levels (boundaries of layer) of FP data, needed for interpolation on GOSAT levels
+    numLayer = len(FP.pointspec)
+    #np.where((a < 14585.88)&(a>14585.2)) 14858 is the time of the7-12-2009
+    p_surf = DSTCCON.pout_hPa.values[14515]#DSGOSAT.pressure_levels.values[0][0]
+    FP_pressure_layers = barometric(p_surf,np.append(np.array([0]),DSFP.RELZZ2[:].values))
+    PW_FP = 1/(p_surf-0.1)*(FP_pressure_layers[0:-1]-FP_pressure_layers[1:]) 
+    #FP_pressure_layers = np.array(range(numLayer,0,-1))*1000/numLayer
+
+    #combine FP and emissions
+    FPCO2_1 = xr.merge([FP, DSCT_totalflux])
+    # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
+    FPCO2_2 = 1/100*FPCO2_1.total_flux*FPCO2_1.spec001_mr*0.044 #dim : time, latitude, longitude, pointspec: 36
+
+    #sum over time, latitude and longitude, remaining dim = layer
+    FPCO2_tt = FPCO2_2.sum(dim=['time','latitude','longitude'])
+    FPCO2_tt.name = 'CO2'
+    FPCO2_tt = FPCO2_tt.to_dataset()
+
+    CO2_enh_molfrac = FPCO2_tt.CO2.values
+
+    #TODO change BG
+    BG = 400e-6
+    CO2_molfrac = CO2_enh_molfrac + BG
+    CO2_enh_col = (PW_FP*CO2_enh_molfrac).sum()
+    return CO2_enh_col, CO2_molfrac

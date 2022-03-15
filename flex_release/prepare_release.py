@@ -18,8 +18,8 @@ def save_release(dir_name, file_name, release_data, config=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Construction tool for FLEXPART RELAESE file of column receptor")
     parser.add_argument("config", type=str, help="path to config file")
-    parser.add_argument("--out_dir", type=str, default="output", help="path of directory for output files")
-    parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file")
+    parser.add_argument("--out_dir", type=str, default="output", help="path of directory for output files (default is 'output')")
+    parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file(default is 'RELEASES')")
     parser.add_argument("--split", type=str, help="If and how to split the output release files. 'station' to split according the station, else int n to split into n parts. (Number of releases should be devisable by n)")
     args = parser.parse_args()
     
