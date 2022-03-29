@@ -898,3 +898,33 @@ def load_nc_partposit(dir_path, chunks=dict(id=1000), drop_non_essential=True):
     if drop_non_essential:
         xarr = xarr.drop(["begin_recsize", "pointspec", "itramem", "topo", "pvi", "qvi", "rhoi", "hmixi", "tri", "tti", "xmass_1", "end_recsize"])
     return xarr
+    
+def box_transit(path, extent):
+    """Calculates side and time index where particle trajectories leave a box (last index within boundary)
+
+    Args:
+        path (str): path to directory with part_posit files
+        extent (list): list giving extent of box in format ["lon1", "lon2", "lat1", "lat2"]
+
+    Returns:
+        np.array: description of direction in which box was left
+        np.array: time indices of last time in box
+    """    
+    keys = ["lon1", "lon2", "lat1", "lat2"]
+    xarr = load_nc_partposit(path)
+    min_inds = np.zeros(len(xarr.id))
+    min_keys = np.array([None]*len(xarr.id))
+    for (key, boundary) in zip(keys, extent):
+        coords = xarr.longitude.values if "lon" in key else xarr.latitude.values
+        #to find sign flip
+        sign = np.sign(coords - boundary)
+        indicator = sign[:, -1]
+        mask = sign == indicator[:, None]
+        #find position of flip (and take care of flip back later)
+        diff_inds = mask.shape[1] - np.argmin(np.flip(mask,axis=-1), axis=1)
+        #set flip to end if not sign flip happens
+        diff_inds[np.count_nonzero(mask, axis=1) == mask.shape[1]] = 0
+        #assign key and time index of first passed boundary
+        min_keys[min_inds < diff_inds] = key
+        min_inds = np.max([min_inds, diff_inds], axis=0)
+    return min_keys, min_inds
