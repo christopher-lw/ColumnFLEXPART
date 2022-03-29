@@ -888,3 +888,13 @@ def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
     CO2_molfrac = CO2_enh_molfrac + BG
     CO2_enh_col = (PW_FP*CO2_enh_molfrac).sum()
     return CO2_enh_col, CO2_molfrac
+
+def load_nc_partposit(dir_path, chunks=dict(id=1000), drop_non_essential=True):
+    files = []
+    for file in os.listdir(dir_path):
+        if "partposit" in file and ".nc" in file:
+            files.append(os.path.join(dir_path, file))
+    xarr = xr.open_mfdataset(files, chunks=chunks)
+    if drop_non_essential:
+        xarr = xarr.drop(["begin_recsize", "pointspec", "itramem", "topo", "pvi", "qvi", "rhoi", "hmixi", "tri", "tti", "xmass_1", "end_recsize"])
+    return xarr
