@@ -5,6 +5,7 @@ import argparse
 import errno
 import time
 import subprocess
+import numpy as np
 
 
 def get_queue():
@@ -28,8 +29,10 @@ if __name__ == "__main__":
     parser.add_argument("output_path", type=str, help="path for output directory (if not absolute path it starts from flex_path)")
     parser.add_argument("release_path", type=str, help="path of directory with RELEASES files (if not absolute path it starts from options_path)")
     parser.add_argument("submit_path", type=str, help="path to slurm script for submission of runs")
+    parser.add_argument("--set_sim_length", type=int , default=0, help="sets simulation lenghts in days for each run automatically sets start one hour before release")
     args = parser.parse_args()
 
+    #append paths to be abolute
     if args.options_path[0] != "/":
         args.options_path = os.path.join(args.flex_path, args.options_path)
 
@@ -39,19 +42,22 @@ if __name__ == "__main__":
     if args.output_path[0] != "/":
         args.output_path = os.path.join(args.flex_path, args.output_path)
 
+    #check if all paths exist
     for arg in vars(args): 
         path = getattr(args, arg)
-        if not os.path.exists(path):
-            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
-        print(f"{arg} = {path}")
+        if "path" in arg:
+            if not os.path.exists(path):
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+            print(f"{arg} = {path}")
 
     inp = input("\nIs the submit file properly prepared? ([y]/n) ") or "y"
     assert inp == "y", "Insert y to continue."
 
-    #print(f"Looking for RELEASES files in :{args.release_path} ...  \n")
+    #get all release files to start jobs with
     rel_names = os.listdir(args.release_path)
     print(f"Found following files in release_path: {rel_names} \n")
 
+    #possibility to save old RELEASE file
     if os.path.exists(os.path.join(args.options_path, "RELEASES")):
         inp = input("Save old RELEASE file? (y/[n]) ") or "n"
         if inp == "y":
@@ -62,12 +68,16 @@ if __name__ == "__main__":
     inp = input("Start runs? ([y]/n) ") or "y"
     assert inp == "y", "Insert y to continue."
 
+    #start jobs
     for rel in rel_names:
+        #copy RELEASE file to options directory
         shutil.copyfile(os.path.join(args.release_path, rel), os.path.join(args.options_path, "RELEASES"))
+        #set current output dir
         new_output_path = os.path.join(args.output_path, rel)
         os.makedirs(new_output_path, exist_ok=True)
         if args.flex_path in new_output_path:
             new_output_path = new_output_path.replace(args.flex_path, "./")
+        #set output path in pathnames file
         paths = ""
         with open(os.path.join(args.flex_path, "pathnames")) as f:
             for i, line in enumerate(f):
@@ -75,18 +85,55 @@ if __name__ == "__main__":
                 if i == 1:
                     addition = f"{new_output_path}\n"
                 paths = paths + addition
-        
+        #write in pathnames file
         with open(os.path.join(args.flex_path, "pathnames"), "w") as f:
             f.write(paths)
-    
-        os.system(f"sbatch {args.submit_path}")
-        
+        #adjust COMMAND file to start 1 hour before fist release and end args.set_sim_length days after
+        if args.set_sim_length != 1:
+            with open(os.path.join(args.options_path, "RELEASES"), "r") as f:
+                for i, line in enumerate(f):
+                    if "IDATE1" in line:
+                        date_str = line.split("=")[1].split(",")[0].replace(" ", "")
+                        start_date = np.datetime64(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}")
+                    if "ITIME1" in line:
+                        time_str = line.split("=")[1].split(",")[0].replace(" ", "")
+                        start_time = np.timedelta64(time_str[:2], "h") + np.timedelta64(time_str[2:4], "m") + np.timedelta64(time_str[4:], "s")
+                        break
+            start = start_date + start_time
+            end = start - np.timedelta64(args.set_sim_length, "D")
+            start = start + np.timedelta64(1, "h")
+            start_date, start_time = str(start).split("T")
+            start_date = start_date.replace("-", "")
+            start_time = start_time.replace(":", "")
+            end_date, end_time = str(end).split("T")
+            end_date = end_date.replace("-", "")
+            end_time = end_time.replace(":", "")
+            com_file = ""
+            with open(os.path.join(args.options_path, "COMMAND"), "r") as f:
+                for line in f:
+                    addition = line
+                    if "IEDATE" in line:
+                        addition = f" IEDATE={start_date},\n"
+                    if "IETIME" in line:
+                        addition = f" IETIME={start_time},\n"
+                    if "IBDATE" in line:
+                        addition = f" IBDATE={end_date},\n"
+                    if "IBTIME" in line:
+                        addition = f" IBTIME={end_time},\n"
+                    com_file = com_file + addition
+            with open(os.path.join(args.options_path, "COMMAND"), "w") as f:
+                f.write(com_file)
+        #submit job
+        #os.system(f"sbatch {args.submit_path}")
+        break
+        #wait for job to start
         states = get_run_states()
         while states.count("R") != len(states):
             time.sleep(2)
             states = get_run_states()
             r_num = states.count("R")
             print(f"{r_num}/{len(states)} tasks running")
+        #buffer
         time.sleep(5)
         
 
