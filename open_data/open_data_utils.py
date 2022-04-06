@@ -889,7 +889,7 @@ def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
     CO2_enh_col = (PW_FP*CO2_enh_molfrac).sum()
     return CO2_enh_col, CO2_molfrac
 
-def load_nc_partposit(dir_path, chunks=dict(id=1000), drop_non_essential=True):
+def load_nc_partposit(dir_path, chunks=None, drop_non_essential=True):
     files = []
     for file in os.listdir(dir_path):
         if "partposit" in file and ".nc" in file:
@@ -927,4 +927,4 @@ def box_transit(path, extent):
         #assign key and time index of first passed boundary
         min_keys[min_inds < diff_inds] = key
         min_inds = np.max([min_inds, diff_inds], axis=0)
-    return min_keys, min_inds
+    return min_keys, min_inds.astype(int)
