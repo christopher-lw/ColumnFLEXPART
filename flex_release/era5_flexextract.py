@@ -12,7 +12,8 @@ if __name__ == "__main__":
     parser.add_argument("start", type=str, help="Start date of downloads YYYYMMDD")
     parser.add_argument("end", type=str, help="End date of downloads YYYYMMDD")
     parser.add_argument("extr_path", type=str, help="path to flexextract home directory")
-    parser.add_argument("run_path", type=str, help="path to run file used in submit (if not absolute path it starts from extr_path/Run)")
+    parser.add_argument("run_path", type=str, help="path to run file (if not absolute path it starts from extr_path/Run)")
+    parser.add_argument("control_path", type=str, help="path to control file used in submit (if notabsolute path it starts from extr_path/Run/Control)")
     parser.add_argument("submit_path", type=str, help="path to slurm script for submission of jobs")
     parser.add_argument("--output_path", type=str, default="Run/Workspace", help="Directory for output (if not absolute path it starts from extr_path).")
 
@@ -20,8 +21,10 @@ if __name__ == "__main__":
 
     if args.run_path[0] != "/":
         args.run_path = os.path.join(args.extr_path, "Run", args.run_path)
-    if args.run_path[0] != "/":
-        args.run_path = os.path.join(args.extr_path, args.output_dir)
+    if args.output_path[0] != "/":
+        args.output_path = os.path.join(args.extr_path, args.output_path)
+    if args.control_path[0] != "/":
+        args.control_path = os.path.join(args.extr_path, "Run/Control", args.control_path)
 
     run_dummy_path = "dummies/run_local.sh"
 
@@ -32,16 +35,9 @@ if __name__ == "__main__":
         path = getattr(args, arg)
         if not os.path.exists(path):
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
-        print(f"{arg} = {path}")
+        print(f"\n{arg} = {path}")
 
-    with open(args.run_path) as f:
-        for line in f:
-            if "CONTROLFILE=" in line:
-                print("Control file from run_file: " + line.rsplit("=")[1])
-                if not os.path.exists(line.rsplit("=")[1].replace("\r","")):
-                    raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
-
-    inp = input("Are the run and submit file properly prepared? ([y]/n) ") or "y"
+    inp = input("\nAre the run and submit file properly prepared? ([y]/n) ") or "y"
     assert inp == "y", "Insert y to continue."
 
     #set list of days to download data for
@@ -56,23 +52,17 @@ if __name__ == "__main__":
     
     #start jobs
     for date in dates:
-        
+        shutil.copyfile(run_dummy_path, args.run_path)
         date = str(date).replace("-", "")
         run_file = ""
         with open(args.run_path) as f:
-            #read each line and change if parameter has to be changed
+            #read each line and change dummies to values
             for line in f:
                 addition = line
-                #set start date
-                if "START_DATE=" in line:
-                    old_date = line.split("=")[1]
-                    addition = addition.replace(old_date, date) + "\n"
-                #name output dir
-                if "INPUTDIR=" in line:
-                    split_char = "/" if "/" in line else "."
-                    addition = line.replace(line.rsplit(split_char, 1)[0] + f"{split_char}EA_{date}'\n")
-                if "END_DATE=" in line or "OUTPUTDIR=" in line:
-                    continue
+                addition = addition.replace("_startdate_", date)
+                addition = addition.replace("_outputpath_", args.output_path)
+                addition = addition.replace("_controlpath_", args.control_path)
+                addition = addition.replace("_extrpath_", args.extr_path)
                 run_file = run_file + addition
         #write manipulated file
         with open(args.run_path, "w") as f:
