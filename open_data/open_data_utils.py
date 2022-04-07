@@ -928,3 +928,133 @@ def box_transit(path, extent):
         min_keys[min_inds < diff_inds] = key
         min_inds = np.max([min_inds, diff_inds], axis=0)
     return min_keys, min_inds.astype(int)
+
+class Trajectories():
+    def __init__(self, traj_dir, ct_dir=None, ct_name_dummy=None):
+        self.__traj_dir__ = traj_dir
+        self.__ct_dir__ = ct_dir
+        self.__ct_dummy__ = ct_name_dummy
+        self.dataset = load_nc_partposit(traj_dir)
+        self.dataset = self.dataset.persist()
+        self.dataframe = self.dataset.to_dataframe().reset_index()
+        self.__min_time__ = self.dataframe.time.min()
+        self.__max_time__ = self.dataframe.time.max()
+        self.endpoints = None
+        self.ct_data = None
+
+    def ct_endpoints(self, extent=None, ct_dir=None, ct_dummy=None):
+        if extent is not None:
+            df_outside = self.dataframe[
+                ((self.dataframe.longitude < extent[0]) | 
+                (self.dataframe.longitude > extent[1]) | 
+                (self.dataframe.latitude < extent[2]) | 
+                (self.dataframe.latitude > extent[3]))]
+            df_outside = df_outside.loc[df_outside.groupby("id")["time"].idxmax()].reset_index().drop(columns="index")
+            df_inside = self.dataframe[~self.dataframe.id.isin(df_outside.id)]
+            df_inside = df_inside.loc[df_inside.groupby("id")["time"].idxmin()]
+            df_total = pd.concat([df_outside, df_inside])
+        
+        else:
+            df_total = self.dataframe.loc[self.dataframe.groupby("id")["time"].idxmin()]
+
+        df_total.attrs["extent"] = extent
+
+        _ = self.load_ct_data(ct_dir, ct_dummy)
+
+        variables = ["time", "longitude", "latitude"]
+        for i, var in enumerate(variables):
+            ct_vals = self.ct_data[var].values
+            df_vals = df_total[var].values
+            diff = np.abs(df_vals[:,None] - ct_vals[None, :])
+            inds = np.argmin(diff, axis=-1)
+            df_total.insert(loc=1, column=f"ct_{var}", value=inds)
+        df_total.insert(loc=1, column="pressure_height", value=10130 * self.pressure_factor(df_total.height))
+        df_total.insert(loc=1, column = "ct_height", value=df_total.apply(lambda x: np.where(np.sort(np.append(np.array(self.ct_data.pressure[x.ct_time,:,x.ct_latitude,x.ct_longitude]), x.pressure_height))[::-1] == x.pressure_height)[0] - 1, axis=1))
+        self.endpoints = df_total
+        
+        return self.endpoints
+
+    def load_ct_data(self, ct_dir=None, ct_dummy=None):
+        if ct_dir is not None:
+            self.__ct_dir__ = ct_dir
+        if ct_dummy is not None:
+            self.__ct_dummy__ = ct_dummy
+        file_list = []
+        for date in np.arange(self.__min_time__, self.__max_time__ + np.timedelta64(1, "D"), dtype='datetime64[D]'):
+            date = str(date)
+            file_list.append(os.path.join(self.__ct_dir__, self.__ct_dummy__ + date + ".nc"))
+        ct_data = xr.open_mfdataset(file_list, combine="by_coords")
+        self.ct_data = ct_data[["co2", "pressure"]].compute()
+        return self.ct_data
+
+    def save_endpoints(self, name="endpoints.pkl", dir=None):
+        if dir is None:
+            dir = self.__traj_dir__
+        save_path = os.path.join(dir, name)
+        self.endpoints.to_pickle(save_path)
+        print(f"Saved endpoints to {save_path}")
+    
+    def load_endpoints(self, name=None, dir=None):
+        if name is None:
+            name="endpoints.pkl"
+        if dir is None:
+            dir = self.__traj_dir__
+        read_path = os.path.join(dir, name)
+        self.endpoints = pd.read_pickle(read_path)
+
+    def co2_from_endpoints(self, extent=None, ct_dir=None, ct_dummy=None, name=None, dir=None):
+        if self.endpoints is None:
+            print("No endpoints found.")
+            if name is None:
+                name = "endpoints.pkl"
+            if dir is None:
+                dir = self.__traj_dir__
+                
+            end_path = os.path.join(dir, name)
+            if os.path.exists(end_path):
+                inp = input(f"\n Load endpoints from {end_path}? ([y]/n)") or "y"
+                if inp == "y":
+                    _ = self.load_endpoints(name, dir)
+            else:
+                print("Calculation of endpoints...")
+                _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
+                print("Done")
+        if self.ct_data is None:
+            _ = self.load_ct_data(ct_dir, ct_dummy)
+
+        if "co2" in self.endpoints.columns:
+            inp = input(f"\n'co2' is allready in endpoints. Calculate again? (y/[n])") or "n"
+            if inp == "y":
+                self.endpoints.drop("co2")
+                self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values[0], axis=1))
+        else:
+            self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values[0], axis=1))
+
+        
+        return self.endpoints.co2.values
+
+        
+
+    def pressure_factor(self,
+        h,
+        Tb = 288.15,
+        hb = 0,
+        R = 8.3144598,
+        g = 9.80665,
+        M = 0.0289644,
+        ):
+        """Calculate factor of barrometric height formula as described here: https://en.wikipedia.org/wiki/Barometric_formula
+
+        Args:
+            h (fleat): height for factor calculation [m]
+            Tb (float, optional): reference temperature [K]. Defaults to 288.15.
+            hb (float, optional): height of reference [m]. Defaults to 0.
+            R (float, optional): universal gas constant [J/(mol*K)]. Defaults to 8.3144598.
+            g (float, optional): gravitational acceleration [m/s^2]. Defaults to 9.80665.
+            M (float, optional): molar mass of Earth's air [kg/mol]. Defaults to 0.0289644.
+
+        Returns:
+            float: fraction of pressure at height h compared to height hb
+        """    
+        factor = np.exp(-g * M * (h - hb)/(R * Tb))
+        return factor
