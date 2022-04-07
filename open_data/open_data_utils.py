@@ -1002,35 +1002,22 @@ class Trajectories():
         read_path = os.path.join(dir, name)
         self.endpoints = pd.read_pickle(read_path)
 
-    def co2_from_endpoints(self, extent=None, ct_dir=None, ct_dummy=None, name=None, dir=None):
+    def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None):
         if self.endpoints is None:
-            print("No endpoints found.")
-            if name is None:
-                name = "endpoints.pkl"
-            if dir is None:
-                dir = self.__traj_dir__
-                
-            end_path = os.path.join(dir, name)
-            if os.path.exists(end_path):
-                inp = input(f"\n Load endpoints from {end_path}? ([y]/n)") or "y"
-                if inp == "y":
-                    _ = self.load_endpoints(name, dir)
-            else:
-                print("Calculation of endpoints...")
-                _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
-                print("Done")
+            print("No endpoints found. To load use load_endpoints(). Calculation of endpoints...")
+            _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
+            print("Done")
         if self.ct_data is None:
             _ = self.load_ct_data(ct_dir, ct_dummy)
 
         if "co2" in self.endpoints.columns:
-            inp = input(f"\n'co2' is allready in endpoints. Calculate again? (y/[n])") or "n"
-            if inp == "y":
+            print("'co2' is allready in endpoints. To calculate again set exists_ok=Flase") or "n"
+            if not exists_ok:
                 self.endpoints.drop("co2")
                 self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values[0], axis=1))
         else:
             self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values[0], axis=1))
 
-        
         return self.endpoints.co2.values
 
         
