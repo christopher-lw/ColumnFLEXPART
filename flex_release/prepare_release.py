@@ -80,7 +80,7 @@ if __name__ == "__main__":
                     save_counter +=1
                     RELEASES = load_header(config["species"])
             if split and split_by == "station":
-                save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES, file_path)
+                save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES)
                 save_counter +=1
                 RELEASES = load_header(config["species"])
         print(f"Save destination: {os.path.join(args.out_dir, args.out_name)}")

@@ -89,7 +89,7 @@ if __name__ == "__main__":
         with open(os.path.join(args.flex_path, "pathnames"), "w") as f:
             f.write(paths)
         #adjust COMMAND file to start 1 hour before fist release and end args.set_sim_length days after
-        if args.set_sim_length != 1:
+        if args.set_sim_length != 0:
             with open(os.path.join(args.options_path, "RELEASES"), "r") as f:
                 for i, line in enumerate(f):
                     if "IDATE1" in line:
@@ -124,8 +124,7 @@ if __name__ == "__main__":
             with open(os.path.join(args.options_path, "COMMAND"), "w") as f:
                 f.write(com_file)
         #submit job
-        #os.system(f"sbatch {args.submit_path}")
-        break
+        os.system(f"sbatch {args.submit_path}")
         #wait for job to start
         states = get_run_states()
         while states.count("R") != len(states):
