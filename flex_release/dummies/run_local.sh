@@ -27,6 +27,7 @@
 
 #QUEUE=None
 START_DATE=_startdate_
+END_DATE=_enddate_
 QUEUE=''
 DATE_CHUNK=None
 JOB_CHUNK=None
@@ -34,7 +35,7 @@ BASETIME=None
 STEP=None
 LEVELIST=None
 AREA=None
-INPUTDIR='_outputpath_/EA__startdate_'
+INPUTDIR='_outputpath_/_name_'
 OUTPUTDIR=None
 PP_ID=None
 JOB_TEMPLATE=''
@@ -49,7 +50,7 @@ PUBLIC=0
 # -----------------------------------------------------------------
 
 # PATH TO SUBMISSION SCRIPT
-#pyscript=../Source/Python/submit.py
+# pyscript=../Source/Python/submit.py
 pyscript=_extrpath_/Source/Python/submit.py
 
 # INITIALIZE EMPTY PARAMETERLIST

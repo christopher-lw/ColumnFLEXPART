@@ -133,7 +133,7 @@ if __name__ == "__main__":
             r_num = states.count("R")
             print(f"{r_num}/{len(states)} tasks running")
         #buffer
-        time.sleep(5)
+        time.sleep(7)
         
 
             

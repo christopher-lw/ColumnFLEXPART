@@ -15,8 +15,9 @@ if __name__ == "__main__":
     parser.add_argument("run_path", type=str, help="path to run file (if not absolute path it starts from extr_path/Run)")
     parser.add_argument("control_path", type=str, help="path to control file used in submit (if notabsolute path it starts from extr_path/Run/Control)")
     parser.add_argument("submit_path", type=str, help="path to slurm script for submission of jobs")
-    parser.add_argument("--output_path", type=str, default="Run/Workspace", help="Directory for output (if not absolute path it starts from extr_path).")
-
+    parser.add_argument("--output_path", type=str, default="Run/Workspace", help="Directory for output (if not absolute path it starts from extr_path). Default to Run/Workspace")
+    parser.add_argument("--prefix", type=str, default="EA", help="Prefix of folders of output. Names will be {prefix}_YYYYMMDD. Default to EA")
+    parser.add_argument("--step", type=int, default="1", help="Number of days to download at once. Default to 1")
     args = parser.parse_args()
 
     if args.run_path[0] != "/":
@@ -35,31 +36,41 @@ if __name__ == "__main__":
         path = getattr(args, arg)
         if not os.path.exists(path):
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
-        print(f"\n{arg} = {path}")
+        print(f"{arg} = {path}")
 
-    inp = input("\nAre the run and submit file properly prepared? ([y]/n) ") or "y"
+    inp = input("\nAre the control and submit file properly prepared? ([y]/n) ") or "y"
     assert inp == "y", "Insert y to continue."
 
     #set list of days to download data for
     start_date = np.datetime64(f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]}")
     end_date = np.datetime64(f"{args.end[:4]}-{args.end[4:6]}-{args.end[6:]}")
 
-    dates = np.arange(start_date, end_date + np.timedelta64(1, "D"), dtype="datetime64[D]")
+    dates = np.arange(start_date, end_date + np.timedelta64(1, "D"), np.timedelta64(args.step, "D"), dtype="datetime64[D]")
+    total_dates = np.arange(start_date, end_date + np.timedelta64(1, "D"), dtype="datetime64[D]")
+    print(f"\nERA 5 data for following dates will be downloaded: \n {total_dates}")
     
-    print(f"\nERA 5 data for following dates will be downloaded: \n {dates}")
     inp = input("\nContinue? ([y]/n) ") or "y"
     assert inp == "y", "Insert y to continue."
     
     #start jobs
     for date in dates:
+        start = date
+        end = date + np.timedelta64(args.step-1, "D")  if args.step != 1 else "None"
+        if end != "None" and end > end_date:
+            end = end_date
+        
         shutil.copyfile(run_dummy_path, args.run_path)
-        date = str(date).replace("-", "")
+        start = str(start).replace("-", "")
+        end = str(end).replace("-", "")
+        name = f"{args.prefix}_{start}-{end}" if args.step != 1 else f"{args.prefix}_{start}"
         run_file = ""
         with open(args.run_path) as f:
             #read each line and change dummies to values
             for line in f:
                 addition = line
-                addition = addition.replace("_startdate_", date)
+                addition = addition.replace("_startdate_", start)
+                addition = addition.replace("_enddate_", end)
+                addition = addition.replace("_name_", name)
                 addition = addition.replace("_outputpath_", args.output_path)
                 addition = addition.replace("_controlpath_", args.control_path)
                 addition = addition.replace("_extrpath_", args.extr_path)
@@ -77,4 +88,4 @@ if __name__ == "__main__":
             r_num = states.count("R")
             print(f"{r_num}/{len(states)} tasks running")
         #buffer
-        time.sleep(5)
+        time.sleep(7)

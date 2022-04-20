@@ -889,45 +889,13 @@ def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
     CO2_enh_col = (PW_FP*CO2_enh_molfrac).sum()
     return CO2_enh_col, CO2_molfrac
 
-def load_nc_partposit(dir_path, chunks=None, drop_non_essential=True):
+def load_nc_partposit(dir_path, chunks=None):
     files = []
     for file in os.listdir(dir_path):
         if "partposit" in file and ".nc" in file:
             files.append(os.path.join(dir_path, file))
     xarr = xr.open_mfdataset(files, chunks=chunks)
-    if drop_non_essential:
-        xarr = xarr.drop(["begin_recsize", "pointspec", "itramem", "topo", "pvi", "qvi", "rhoi", "hmixi", "tri", "tti", "xmass_1", "end_recsize"])
     return xarr
-    
-def box_transit(path, extent):
-    """Calculates side and time index where particle trajectories leave a box (last index within boundary)
-
-    Args:
-        path (str): path to directory with part_posit files
-        extent (list): list giving extent of box in format ["lon1", "lon2", "lat1", "lat2"]
-
-    Returns:
-        np.array: description of direction in which box was left
-        np.array: time indices of last time in box
-    """    
-    keys = ["lon1", "lon2", "lat1", "lat2"]
-    xarr = load_nc_partposit(path)
-    min_inds = np.zeros(len(xarr.id))
-    min_keys = np.array([None]*len(xarr.id))
-    for (key, boundary) in zip(keys, extent):
-        coords = xarr.longitude.values if "lon" in key else xarr.latitude.values
-        #to find sign flip
-        sign = np.sign(coords - boundary)
-        indicator = sign[:, -1]
-        mask = sign == indicator[:, None]
-        #find position of flip (and take care of flip back later)
-        diff_inds = mask.shape[1] - np.argmin(np.flip(mask,axis=-1), axis=1)
-        #set flip to end if not sign flip happens
-        diff_inds[np.count_nonzero(mask, axis=1) == mask.shape[1]] = 0
-        #assign key and time index of first passed boundary
-        min_keys[min_inds < diff_inds] = key
-        min_inds = np.max([min_inds, diff_inds], axis=0)
-    return min_keys, min_inds.astype(int)
 
 class Trajectories():
     def __init__(self, traj_dir, ct_dir=None, ct_name_dummy=None):
@@ -956,7 +924,6 @@ class Trajectories():
         
         else:
             df_total = self.dataframe.loc[self.dataframe.groupby("id")["time"].idxmin()]
-
         df_total.attrs["extent"] = extent
 
         _ = self.load_ct_data(ct_dir, ct_dummy)
@@ -970,7 +937,7 @@ class Trajectories():
             df_total.insert(loc=1, column=f"ct_{var}", value=inds)
         df_total.insert(loc=1, column="pressure_height", value=10130 * self.pressure_factor(df_total.height))
         df_total.insert(loc=1, column = "ct_height", value=df_total.apply(lambda x: np.where(np.sort(np.append(np.array(self.ct_data.pressure[x.ct_time,:,x.ct_latitude,x.ct_longitude]), x.pressure_height))[::-1] == x.pressure_height)[0] - 1, axis=1))
-        self.endpoints = df_total
+        self.endpoints = df_total.sort_values("id")
         
         return self.endpoints
 
@@ -1000,9 +967,9 @@ class Trajectories():
         if dir is None:
             dir = self.__traj_dir__
         read_path = os.path.join(dir, name)
-        self.endpoints = pd.read_pickle(read_path)
+        self.endpoints = pd.read_pickle(read_path).sort_values("id")
 
-    def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None):
+    def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
         if self.endpoints is None:
             print("No endpoints found. To load use load_endpoints(). Calculation of endpoints...")
             _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
@@ -1014,9 +981,16 @@ class Trajectories():
             print("'co2' is allready in endpoints. To calculate again set exists_ok=Flase") or "n"
             if not exists_ok:
                 self.endpoints.drop("co2")
-                self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values[0], axis=1))
+                self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values, axis=1))
         else:
-            self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values[0], axis=1))
+            self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values, axis=1))
+        
+        if pressure_weight:
+            df = self.dataframe.where(self.dataframe.time==self.dataframe.time.max()).dropna()
+            pr = self.pressure_factor(df.sort_values("id").height).values
+            pr = pr/pr.sum()
+            self.endpoints = self.endpoints.sort_values("id")
+            self.endpoints.insert(loc=1, column="pressure_weight", value=pr)
 
         return self.endpoints.co2.values
 
