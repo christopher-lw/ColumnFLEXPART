@@ -27,6 +27,30 @@ def pressure_factor(
     factor = np.exp(-g * M * (h - hb)/(R * Tb))
     return factor
 
+def inv_pressure_factor(
+    factor,
+    Tb = 288.15,
+    hb = 0,
+    R = 8.3144598,
+    g = 9.80665,
+    M = 0.0289644,
+    ):
+    """Calculate height form inverse of barrometric height formula as described here: https://en.wikipedia.org/wiki/Barometric_formula
+
+    Args:
+        h (fleat): height for factor calculation [m]
+        Tb (float, optional): reference temperature [K]. Defaults to 288.15.
+        hb (float, optional): height of reference [m]. Defaults to 0.
+        R (float, optional): universal gas constant [J/(mol*K)]. Defaults to 8.3144598.
+        g (float, optional): gravitational acceleration [m/s^2]. Defaults to 9.80665.
+        M (float, optional): molar mass of Earth's air [kg/mol]. Defaults to 0.0289644.
+
+    Returns:
+        float: height h at fraction of pressure relative to hb
+    """    
+    h = (R * Tb) / (-g * M) *  np.log(factor) + hb
+    return h
+
 def load_header(species=41):
     """Load header for RELEASE file
     Args:
@@ -207,6 +231,10 @@ def setup_column(config):
         setup = PressureColumnSetup(config)
     elif config["column_mode"] == "pressure_wu":
         setup = PressureWuColumnSetup(config)
+    elif config["column_mode"] == "unit_single":
+        setup = UnitSinglePartColumnSetup(config)
+    elif config["column_mode"] == "pressure_single":
+        setup = PressureSinglePartColumnSetup(config)
     return setup.height_levels, setup.part_nums
 
 def config_total_parts(config_path, output_path, total_parts):
@@ -238,4 +266,32 @@ def config_total_parts(config_path, output_path, total_parts):
     with open(output_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False)
     print(f"Saved to {output_path}.")
+
     
+class SinglePartColumnSetup():
+    def __init__(self, config):
+        self.config = config
+        self.regions = config["regions"]
+        self.parts = config["n"]
+        self.part_nums = [1]*self.parts
+        self.height_levels = []
+        self.prepare_height_levels()
+
+    def prepare_height_levels(self):
+        pass
+
+class UnitSinglePartColumnSetup(SinglePartColumnSetup):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def prepare_height_levels(self):
+        self.height_levels = list(np.linspace(self.regions[0]*1e3, self.regions[1]*1e3, self.parts + 1))
+
+class PressureSinglePartColumnSetup(SinglePartColumnSetup):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def prepare_height_levels(self):
+        pressure_regions = pressure_factor(np.array(self.regions) * 1e3)
+        pressures = np.linspace(*pressure_regions, self.parts+1)
+        self.height_levels = list(inv_pressure_factor(pressures))

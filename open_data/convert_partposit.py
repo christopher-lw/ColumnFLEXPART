@@ -5,7 +5,7 @@ import pandas as pd
 import xarray as xr
 from datetime import datetime as dt
 
-def partposit_bin_to_nc(filename, nspec=1, remove_bin=False):
+def partposit_bin_to_nc(filename, nspec=1, remove_bin=False, use_pointspec=False):
     """Converts binary partposit output file of FLEXPART to nc file. Optionally removes binary file.
 
     Args:
@@ -35,22 +35,28 @@ def partposit_bin_to_nc(filename, nspec=1, remove_bin=False):
     #convert to dataframe and drop
     df = pd.DataFrame(data = data_list[0])
     df = df.drop(df[df.longitude < -200].index)
+    df = df.drop(["begin_recsize", "itramem", "topo", "pvi", "qvi", "rhoi", "hmixi", "tri", "tti", "xmass_1", "end_recsize"], axis=1)
     date = filename.rsplit("_")[-1]
     times = [np.datetime64(dt.strptime(str(date), "%Y%m%d%H%M%S"))]*len(df["pointspec"])
-    ids = np.arange(len(df["pointspec"]))
     df["time"] = times
-    df["id"] = ids
-    df = df.set_index(["id", "time"])
+    if not use_pointspec:
+        ids = np.arange(len(df["pointspec"]))
+        df["id"] = ids
+        df = df.set_index(["id", "time"])
+    else:
+        df = df.set_index(["pointspec", "time"])
     xarr = df.to_xarray()
     if remove_bin:
         os.remove(filename)
         print(f"Deleted binary file {filename}")
     xarr.to_netcdf(filename + ".nc")
     print(f"Saved netcdf file to {filename}.nc")
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Script to convert partposit files in directorz to nc files.")
     parser.add_argument("dir_path", type=str, help="Directory with binary files to convert.")
     parser.add_argument('--rm', action='store_true', help="Flag to remove binary files.")
+    parser.add_argument('--use_pointspec', action="store_true", help="Flag to use pointspec as id")
     args = parser.parse_args()
     dir_path = args.dir_path
     for file in os.listdir(dir_path):
@@ -60,4 +66,4 @@ if __name__ == '__main__':
                 print(f"{path} allready converted.")
                 continue
             print(file)
-            partposit_bin_to_nc(path, remove_bin=args.rm)
+            partposit_bin_to_nc(path, remove_bin=args.rm, use_pointspec=args.use_pointspec)

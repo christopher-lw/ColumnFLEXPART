@@ -898,10 +898,11 @@ def load_nc_partposit(dir_path, chunks=None):
     return xarr
 
 class Trajectories():
-    def __init__(self, traj_dir, ct_dir=None, ct_name_dummy=None):
+    def __init__(self, traj_dir, ct_dir=None, ct_name_dummy=None, id_key="id"):
         self.__traj_dir__ = traj_dir
         self.__ct_dir__ = ct_dir
         self.__ct_dummy__ = ct_name_dummy
+        self.id_key = id_key
         self.dataset = load_nc_partposit(traj_dir)
         self.dataset = self.dataset.persist()
         self.dataframe = self.dataset.to_dataframe().reset_index()
@@ -917,13 +918,13 @@ class Trajectories():
                 (self.dataframe.longitude > extent[1]) | 
                 (self.dataframe.latitude < extent[2]) | 
                 (self.dataframe.latitude > extent[3]))]
-            df_outside = df_outside.loc[df_outside.groupby("id")["time"].idxmax()].reset_index().drop(columns="index")
-            df_inside = self.dataframe[~self.dataframe.id.isin(df_outside.id)]
-            df_inside = df_inside.loc[df_inside.groupby("id")["time"].idxmin()]
+            df_outside = df_outside.loc[df_outside.groupby(self.id_key)["time"].idxmax()].reset_index().drop(columns="index")
+            df_inside = self.dataframe[~self.dataframe[self.id_key].isin(df_outside[self.id_key])]
+            df_inside = df_inside.loc[df_inside.groupby(self.id_key)["time"].idxmin()]
             df_total = pd.concat([df_outside, df_inside])
         
         else:
-            df_total = self.dataframe.loc[self.dataframe.groupby("id")["time"].idxmin()]
+            df_total = self.dataframe.loc[self.dataframe.groupby(self.id_key)["time"].idxmin()]
         df_total.attrs["extent"] = extent
 
         _ = self.load_ct_data(ct_dir, ct_dummy)
@@ -937,7 +938,7 @@ class Trajectories():
             df_total.insert(loc=1, column=f"ct_{var}", value=inds)
         df_total.insert(loc=1, column="pressure_height", value=10130 * self.pressure_factor(df_total.height))
         df_total.insert(loc=1, column = "ct_height", value=df_total.apply(lambda x: np.where(np.sort(np.append(np.array(self.ct_data.pressure[x.ct_time,:,x.ct_latitude,x.ct_longitude]), x.pressure_height))[::-1] == x.pressure_height)[0] - 1, axis=1))
-        self.endpoints = df_total.sort_values("id")
+        self.endpoints = df_total.sort_values(self.id_key)
         
         return self.endpoints
 
@@ -967,7 +968,7 @@ class Trajectories():
         if dir is None:
             dir = self.__traj_dir__
         read_path = os.path.join(dir, name)
-        self.endpoints = pd.read_pickle(read_path).sort_values("id")
+        self.endpoints = pd.read_pickle(read_path).sort_values(self.id_key)
 
     def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
         if self.endpoints is None:
@@ -987,13 +988,12 @@ class Trajectories():
         
         if pressure_weight:
             df = self.dataframe.where(self.dataframe.time==self.dataframe.time.max()).dropna()
-            pr = self.pressure_factor(df.sort_values("id").height).values
+            pr = self.pressure_factor(df.sort_values(self.id_key).height).values
             pr = pr/pr.sum()
-            self.endpoints = self.endpoints.sort_values("id")
+            self.endpoints = self.endpoints.sort_values(self.id_key)
             self.endpoints.insert(loc=1, column="pressure_weight", value=pr)
 
         return self.endpoints.co2.values
-
         
 
     def pressure_factor(self,
