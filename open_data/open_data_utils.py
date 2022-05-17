@@ -1050,7 +1050,7 @@ class FlexDataset2():
                 df_total = pd.concat([df_outside, df_inside])
             
             else:
-                df_total = self.dataframe.loc[self.dataframe.groupby(self.id_key)["time"].idxmin()]
+                df_total = self.dataframe.loc[self.dataframe.groupby(self._id_key)["time"].idxmin()]
             df_total.attrs["border"] = border
 
             _ = self.load_ct_data(ct_dir, ct_dummy)
