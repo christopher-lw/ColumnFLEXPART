@@ -5,11 +5,12 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import cartopy.crs as ccrs
 import cartopy.feature as cf
 from functools import cache
 import copy
-import datetime
+from datetime import datetime, date
 #import geoplot
 #import contextily as ctx
 
@@ -19,14 +20,12 @@ def to_tuple(convert_arg, convert_ind):
             args=list(args)
             for i, arg in enumerate(args):
                 if i in convert_ind:
-                    if isinstance(arg, int):
-                        arg = [arg]
-                    args[i] = tuple(arg)
+                    if not (isinstance(arg, int) or arg is None):
+                        args[i] = tuple(arg)
             for i, (key, value) in enumerate(kwargs.items()):
                 if key in convert_arg:
-                    if isinstance(value, int):
-                        value = [value]
-                    kwargs[key] = tuple(value)
+                    if not (isinstance(value, int) or value is None):
+                        kwargs[key] = tuple(value)
             args = tuple(args)
             return function(*args, **kwargs)
         return new_function
@@ -784,7 +783,8 @@ class FlexDataCollection(FlexDataset):
             self.Footprints.append(new_Footprints)
 
     def plot_footprint(self, ax, station, plot_func=None, plot_station=False, station_kwargs=dict(color="black"), **kwargs):
-        """Plots Footprint of a station with index index
+        """
+        Plots Footprint of a station with index index
 
         Args:
             ax (Axes): Axes to plot on
@@ -795,14 +795,14 @@ class FlexDataCollection(FlexDataset):
 
         Returns:
             Axes: Axes with plot
-        """        
+        """ 
         return super().plot_footprint(ax, station, plot_func, plot_station, station_kwargs, **kwargs)
 
     def add_map(self, ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]], **grid_kwargs):
         return super().add_map(ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]], **grid_kwargs)
         
           
-def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
+def calc_enhancement(fp_data, ct_file, p_surf, startdate, enddate):
 
     def barometric(a, b):
         func = lambda x, y: x*np.exp(-(y/7800)) #Skalenhöhe von 7.8 km passt?
@@ -812,23 +812,13 @@ def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
         func = lambda x, y: np.log(y/x)*(-7800) #Skalenhöhe von 7.8 km passt?
         return xr.apply_ufunc(func, p_surf, p)
     #-----------------------------
-    enddate = datetime.date(int(end[0:4]),int(end[5:7]),int(end[8:10]))
-    startdate = datetime.date(int(start[0:4]),int(start[5:7]),int(start[8:10]))
 
     #test the right order of dates
     assert enddate > startdate, 'The startdate has to be before the enddate'
 
-    #get GOSAT measurement
-    gosat_file = gosat_file+str(enddate.year)+str(enddate.month).zfill(2)+str(enddate.day).zfill(2)+'.nc'
-
-    #get TCCON data
-    DSTCCON = xr.open_mfdataset(tccon_file, combine='by_coords',decode_times = False, chunks="auto")
-
     #get Footprint
-    if isinstance(fp_data, str):
-        DSFP = xr.open_mfdataset(fp_data, combine='by_coords', chunks="auto")
-    else:
-        DSFP = fp_data
+    DSFP = fp_data
+    
     #DSFP.RELZZ1.values
 
     #read CT fluxes (dayfiles) and merge into one file
@@ -841,7 +831,6 @@ def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
             DSCTflux = DSCTfluxday
         else:
             DSCTflux = xr.concat([DSCTflux,DSCTfluxday],dim = 'time')
-        
     #calculate Satelite CO2 enhancement
             
     #sum flux components: 
@@ -849,24 +838,20 @@ def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
     DSCT_totalflux.name = 'total_flux'
 
     #can be deleted when footprint has -179.5 coordinate
-    DSCT_totalflux = DSCT_totalflux[:,:,1:]
-
+    DSCT_totalflux = DSCT_totalflux[:,:,1:]#.compute()
+    
     #from .interp can be deleted as soon as FP dim fits CTFlux dim, layers repeated???? therfore only first 36
-    #FP = DSFP.spec001_mr[0,0:36,:,0,:,:].interp(latitude=DSCT_totalflux["latitude"], longitude=DSCT_totalflux["longitude"], time = DSCT_totalflux["time"])
-    #FP = DSFP.spec001_mr[0,0:36,:,0,:,:].interp(time = DSCT_totalflux["time"])
     FP = DSFP.spec001_mr[0,:,:,0,:,:]
     dt = np.timedelta64(90,'m')
     FP = FP.assign_coords(time=(FP.time + dt))
     #flip time axis
-    FP = FP.sortby('time')
+    FP = FP.sortby('time')#.compute()
 
     #selct times of Footprint in fluxes
     DSCT_totalflux = DSCT_totalflux.sel(time=slice(FP.time.min(),FP.time.max()))
-
+    
     #get pressure levels (boundaries of layer) of FP data, needed for interpolation on GOSAT levels
     numLayer = len(FP.pointspec)
-    #np.where((a < 14585.88)&(a>14585.2)) 14858 is the time of the7-12-2009
-    p_surf = DSTCCON.pout_hPa.values[14515]#DSGOSAT.pressure_levels.values[0][0]
     FP_pressure_layers = barometric(p_surf,np.append(np.array([0]),DSFP.RELZZ2[:].values))
     PW_FP = 1/(p_surf-0.1)*(FP_pressure_layers[0:-1]-FP_pressure_layers[1:]) 
     #FP_pressure_layers = np.array(range(numLayer,0,-1))*1000/numLayer
@@ -875,19 +860,15 @@ def calc_emission(fp_data, tccon_file, ct_file, gosat_file, start, end):
     FPCO2_1 = xr.merge([FP, DSCT_totalflux])
     # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
     FPCO2_2 = 1/100*FPCO2_1.total_flux*FPCO2_1.spec001_mr*0.044 #dim : time, latitude, longitude, pointspec: 36
-
     #sum over time, latitude and longitude, remaining dim = layer
     FPCO2_tt = FPCO2_2.sum(dim=['time','latitude','longitude'])
     FPCO2_tt.name = 'CO2'
     FPCO2_tt = FPCO2_tt.to_dataset()
 
     CO2_enh_molfrac = FPCO2_tt.CO2.values
-
-    #TODO change BG
-    BG = 400e-6
-    CO2_molfrac = CO2_enh_molfrac + BG
     CO2_enh_col = (PW_FP*CO2_enh_molfrac).sum()
-    return CO2_enh_col, CO2_molfrac
+    CO2_enh_col = CO2_enh_col*1e6
+    return CO2_enh_col
 
 def load_nc_partposit(dir_path, chunks=None):
     files = []
@@ -897,125 +878,340 @@ def load_nc_partposit(dir_path, chunks=None):
     xarr = xr.open_mfdataset(files, chunks=chunks)
     return xarr
 
-class Trajectories():
-    def __init__(self, traj_dir, ct_dir=None, ct_name_dummy=None, id_key="id"):
-        self.__traj_dir__ = traj_dir
-        self.__ct_dir__ = ct_dir
-        self.__ct_dummy__ = ct_name_dummy
-        self.id_key = id_key
-        self.dataset = load_nc_partposit(traj_dir)
-        self.dataset = self.dataset.persist()
-        self.dataframe = self.dataset.to_dataframe().reset_index()
-        self.__min_time__ = self.dataframe.time.min()
-        self.__max_time__ = self.dataframe.time.max()
-        self.endpoints = None
-        self.ct_data = None
+class FlexDataset2():
+    def __init__(self, nc_path, **kwargs):
+        self._nc_path = nc_path
+        self._dir = nc_path.rsplit("/", 1)[0]
+        self._kwargs = dict(
+            extent=[-180, 180, -90, 90],
+            ct_dir=None, 
+            ct_name_dummy=None,
+            id_key="id",
+            chunks="auto",
+            name=None,
+            cmap="jet",
+            norm=LogNorm(),
+            datakey="spec001_mr",
+            persist=False
+        )
+        self._kwargs.update(kwargs)
+        self._plot_kwargs = self._kwargs.copy()
+        [self._plot_kwargs.pop(key) for key in ['extent', 'ct_dir', 'ct_name_dummy', 'id_key', 'chunks', 'name', 'datakey', 'persist']]
 
-    def ct_endpoints(self, extent=None, ct_dir=None, ct_dummy=None):
-        if extent is not None:
-            df_outside = self.dataframe[
-                ((self.dataframe.longitude < extent[0]) | 
-                (self.dataframe.longitude > extent[1]) | 
-                (self.dataframe.latitude < extent[2]) | 
-                (self.dataframe.latitude > extent[3]))]
-            df_outside = df_outside.loc[df_outside.groupby(self.id_key)["time"].idxmax()].reset_index().drop(columns="index")
-            df_inside = self.dataframe[~self.dataframe[self.id_key].isin(df_outside[self.id_key])]
-            df_inside = df_inside.loc[df_inside.groupby(self.id_key)["time"].idxmin()]
-            df_total = pd.concat([df_outside, df_inside])
-        
+        self.footprint = self.Footprint(self)
+        if os.path.exists(os.path.join(self._dir, "trajectories.nc")):
+            self.trajectories = self.Trajectories(self)
         else:
-            df_total = self.dataframe.loc[self.dataframe.groupby(self.id_key)["time"].idxmin()]
-        df_total.attrs["extent"] = extent
+            print("No trajectory information found.")
+            self.trajectories = None
+        self.start, self.stop, self.release = self.get_metadata()
+        self._background = None
+        self._enhancement = None
 
-        _ = self.load_ct_data(ct_dir, ct_dummy)
+    def get_metadata(self):
+        #read things from the header and RELEASES.namelist
+        with open(os.path.join(self._dir, 'header_txt'), 'r') as f:
+            lines = f.readlines()
+        ibdate, ibtime, iedate, ietime = lines[1].strip().split()[:4]
 
-        variables = ["time", "longitude", "latitude"]
-        for i, var in enumerate(variables):
-            ct_vals = self.ct_data[var].values
-            df_vals = df_total[var].values
-            diff = np.abs(df_vals[:,None] - ct_vals[None, :])
-            inds = np.argmin(diff, axis=-1)
-            df_total.insert(loc=1, column=f"ct_{var}", value=inds)
-        df_total.insert(loc=1, column="pressure_height", value=10130 * self.pressure_factor(df_total.height))
-        df_total.insert(loc=1, column = "ct_height", value=df_total.apply(lambda x: np.where(np.sort(np.append(np.array(self.ct_data.pressure[x.ct_time,:,x.ct_latitude,x.ct_longitude]), x.pressure_height))[::-1] == x.pressure_height)[0] - 1, axis=1))
-        self.endpoints = df_total.sort_values(self.id_key)
+        start = datetime.strptime(iedate+ietime, "%Y%m%d%H%M%S")
+        stop = datetime.strptime(ibdate+ibtime, "%Y%m%d%H%M%S")
+        with open(os.path.join(self._dir, 'RELEASES.namelist'), 'r') as f:
+            lines = f.readlines()[5: 13]
         
-        return self.endpoints
+        release = dict()
+        for i, line in enumerate(lines):
+            lines[i] = line.split('=')[1].strip()[:-1]
+        
+        release['start'] = datetime.strptime(lines[2] + lines[3], "%Y%m%d%H%M%S")
+        release['stop'] = datetime.strptime(lines[0] + lines[1], "%Y%m%d%H%M%S")
+        release['lon1'] = float(lines[4])
+        release['lon2'] = float(lines[5])
+        release['lat1'] = float(lines[6])
+        release['lat2'] = float(lines[7])
+        release['heights'] = np.mean([self.footprint.dataset.RELZZ1.values, self.footprint.dataset.RELZZ2.values], axis=0)
 
-    def load_ct_data(self, ct_dir=None, ct_dummy=None):
-        if ct_dir is not None:
-            self.__ct_dir__ = ct_dir
-        if ct_dummy is not None:
-            self.__ct_dummy__ = ct_dummy
-        file_list = []
-        for date in np.arange(self.__min_time__, self.__max_time__ + np.timedelta64(1, "D"), dtype='datetime64[D]'):
-            date = str(date)
-            file_list.append(os.path.join(self.__ct_dir__, self.__ct_dummy__ + date + ".nc"))
-        ct_data = xr.open_mfdataset(file_list, combine="by_coords")
-        self.ct_data = ct_data[["co2", "pressure"]].compute()
-        return self.ct_data
+        return start, stop, release
 
-    def save_endpoints(self, name="endpoints.pkl", dir=None):
-        if dir is None:
-            dir = self.__traj_dir__
-        save_path = os.path.join(dir, name)
-        self.endpoints.to_pickle(save_path)
-        print(f"Saved endpoints to {save_path}")
-    
-    def load_endpoints(self, name=None, dir=None):
-        if name is None:
-            name="endpoints.pkl"
-        if dir is None:
-            dir = self.__traj_dir__
-        read_path = os.path.join(dir, name)
-        self.endpoints = pd.read_pickle(read_path).sort_values(self.id_key)
+    class Footprint():
+        def __init__(self, outer):
+            self._outer = outer
+            self._nc_path = outer._nc_path
+            self._dir = outer._dir
+            self.extent = outer._kwargs['extent']
+            self.chunks = outer._kwargs['chunks']
+            self.name = outer._kwargs['name']
+            self.datakey = outer._kwargs['datakey']
 
-    def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
-        if self.endpoints is None:
-            print("No endpoints found. To load use load_endpoints(). Calculation of endpoints...")
-            _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
-            print("Done")
-        if self.ct_data is None:
+            self._plot_kwargs = outer._plot_kwargs
+            
+            self.dataset = xr.open_dataset(self._nc_path, chunks=self.chunks)
+            self.dataarray = self.dataset[self.datakey]
+            if self._outer._kwargs['persist']: self.dataarray = self.dataarray.persist()
+
+            self._total = None
+        
+        def save_total(self):
+            """Saves Footprints
+
+            Args:
+                include_sums (bool, optional): _description_. Defaults to True.
+            """        
+            sum_path = os.path.join(self._dir, "Footprint_total.nc")
+            self._total.to_netcdf(sum_path)
+                
+        
+        def calc_total(self):
+            """Calculates total Footprints
+            """
+            self._total = None
+            self._total = self.dataarray.sum(dim=["time", "pointspec"]).compute()
+        
+        def load_total(self):
+            """Loads Footprints from directory of DataSet data
+            """
+            self._total = None
+            path = os.path.join(self._dir, "Footprint_total.nc")
+            self._total = xr.load_dataarray(path)
+            
+        def total(self):
+            """Get footprints from either loading of calculation
+            """ 
+            if self._total is None:
+                try:
+                    self.load_total()
+                except FileNotFoundError:
+                    self.calc_total()
+                    self.save_total()
+            return self._total
+
+        def plot(self, ax=None, time=None, pointspec=None, plot_func=None, plot_station=True, station_kwargs=dict(color="black"), **kwargs):
+            return_fig = False
+            fig = None
+            
+            plot_kwargs = self._plot_kwargs
+            plot_kwargs.update(kwargs)
+            if ax is None:
+                fig, ax = self._outer.subplots()
+                return_fig = True
+            footprint = self.sum(time, pointspec)
+            footprint = footprint.where(footprint != 0)[:,:,...]
+            if plot_func is None:
+                footprint.plot(ax=ax, **plot_kwargs)
+            else:
+                getattr(footprint.plot, plot_func)(ax=ax, **plot_kwargs)
+            if plot_station:
+                ax.scatter(self._outer.release['lon1'], self._outer.release['lat1'], **station_kwargs)
+            if return_fig:
+                return fig, ax
+            else:
+                return ax
+
+        
+        @to_tuple(["time", "pointspec"],[1, 2])
+        @cache
+        def sum(self, time=None, pointspec=None):
+            footprint = None
+            if time is None and pointspec is None:
+                footprint = self.total()
+            elif time is None:
+                footprint = self.dataarray.sum(dim=["time"])
+                footprint = footprint.isel(dict(pointspec = list(pointspec))).sum(dim=["pointspec"]).compute()
+            elif pointspec is None:
+                footprint = self.dataarray.sum(dim=["pointspec"])
+                footprint = footprint.isel(dict(time = list(time))).sum(dim=["time"]).compute()
+            return footprint
+ 
+    class Trajectories:
+        def __init__(self, outer):
+            self._outer = outer
+            self._dir = outer._dir
+            self._ct_dir = outer._kwargs['ct_dir']
+            self._ct_dummy = outer._kwargs['ct_name_dummy']
+            self._id_key = outer._kwargs['id_key']
+            self.dataset = xr.open_dataset(os.path.join(self._dir, "trajectories.nc"))
+            self.dataset = self.dataset
+            self.dataframe = self.dataset.to_dataframe().reset_index()
+            self._min_time = self.dataframe.time.min()
+            self._max_time = self.dataframe.time.max()
+            self.endpoints = None
+            self.ct_data = None
+
+        def ct_endpoints(self, border=None, ct_dir=None, ct_dummy=None):
+            if border is not None:
+                df_outside = self.dataframe[
+                    ((self.dataframe.longitude < border[0]) | 
+                    (self.dataframe.longitude > border[1]) | 
+                    (self.dataframe.latitude < border[2]) | 
+                    (self.dataframe.latitude > border[3]))]
+                df_outside = df_outside.loc[df_outside.groupby(self._id_key)["time"].idxmax()].reset_index().drop(columns="index")
+                df_inside = self.dataframe[~self.dataframe[self._id_key].isin(df_outside[self._id_key])]
+                df_inside = df_inside.loc[df_inside.groupby(self._id_key)["time"].idxmin()]
+                df_total = pd.concat([df_outside, df_inside])
+            
+            else:
+                df_total = self.dataframe.loc[self.dataframe.groupby(self.id_key)["time"].idxmin()]
+            df_total.attrs["border"] = border
+
             _ = self.load_ct_data(ct_dir, ct_dummy)
 
-        if "co2" in self.endpoints.columns:
-            print("'co2' is allready in endpoints. To calculate again set exists_ok=Flase") or "n"
-            if not exists_ok:
-                self.endpoints.drop("co2")
+            variables = ["time", "longitude", "latitude"]
+            for i, var in enumerate(variables):
+                ct_vals = self.ct_data[var].values
+                df_vals = df_total[var].values
+                diff = np.abs(df_vals[:,None] - ct_vals[None, :])
+                inds = np.argmin(diff, axis=-1)
+                df_total.insert(loc=1, column=f"ct_{var}", value=inds)
+            df_total.insert(loc=1, column="pressure_height", value=10130 * self.pressure_factor(df_total.height))
+            df_total.insert(loc=1, column = "ct_height", value=df_total.apply(lambda x: np.where(np.sort(np.append(np.array(self.ct_data.pressure[x.ct_time,:,x.ct_latitude,x.ct_longitude]), x.pressure_height))[::-1] == x.pressure_height)[0] - 1, axis=1))
+            
+            self.endpoints = df_total.sort_values(self._id_key)
+            self.endpoints = self.endpoints[np.sign(self.endpoints.pointspec) == 1]
+            return self.endpoints
+
+        def load_ct_data(self, ct_dir=None, ct_dummy=None):
+            if ct_dir is not None:
+                self._ct_dir = ct_dir
+            if ct_dummy is not None:
+                self._ct_dummy = ct_dummy
+            file_list = []
+            for date in np.arange(self._min_time, self._max_time + np.timedelta64(1, "D"), dtype='datetime64[D]'):
+                date = str(date)
+                file_list.append(os.path.join(self._ct_dir, self._ct_dummy + date + ".nc"))
+            ct_data = xr.open_mfdataset(file_list, combine="by_coords")
+            self.ct_data = ct_data[["co2", "pressure"]].compute()
+            return self.ct_data
+
+        def save_endpoints(self, name="endpoints.pkl", dir=None):
+            if dir is None:
+                dir = self._dir
+            save_path = os.path.join(dir, name)
+            self.endpoints.to_pickle(save_path)
+            print(f"Saved endpoints to {save_path}")
+        
+        def load_endpoints(self, name=None, dir=None):
+            if name is None:
+                name="endpoints.pkl"
+            if dir is None:
+                dir = self._dir
+            read_path = os.path.join(dir, name)
+            self.endpoints = pd.read_pickle(read_path).sort_values(self._id_key)
+
+        def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
+            if self.endpoints is None:
+                print("No endpoints found. To load use load_endpoints(). Calculation of endpoints...")
+                _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
+                print("Done")
+            if self.ct_data is None:
+                _ = self.load_ct_data(ct_dir, ct_dummy)
+
+            if "co2" in self.endpoints.columns:
+                print("'co2' is allready in endpoints. To calculate again set exists_ok=Flase") or "n"
+                if not exists_ok:
+                    self.endpoints.drop("co2")
+                    self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values, axis=1))
+            else:
                 self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values, axis=1))
-        else:
-            self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values, axis=1))
-        
-        if pressure_weight:
-            df = self.dataframe.where(self.dataframe.time==self.dataframe.time.max()).dropna()
-            pr = self.pressure_factor(df.sort_values(self.id_key).height).values
-            pr = pr/pr.sum()
-            self.endpoints = self.endpoints.sort_values(self.id_key)
-            self.endpoints.insert(loc=1, column="pressure_weight", value=pr)
+            
+            if pressure_weight:
+                pointspec = self.endpoints.pointspec.values.astype(int)
+                heights = self._outer.release["heights"][pointspec-1]
+                pressures = self.pressure_factor(heights)
+                pressures = pressures/pressures.sum()
+                self.endpoints.insert(loc=1, column="pressure_weight", value=pressures)
 
-        return self.endpoints.co2.values
-        
+            return self.endpoints.co2.values
+            
 
-    def pressure_factor(self,
-        h,
-        Tb = 288.15,
-        hb = 0,
-        R = 8.3144598,
-        g = 9.80665,
-        M = 0.0289644,
-        ):
-        """Calculate factor of barrometric height formula as described here: https://en.wikipedia.org/wiki/Barometric_formula
+        def pressure_factor(self,
+            h,
+            Tb = 288.15,
+            hb = 0,
+            R = 8.3144598,
+            g = 9.80665,
+            M = 0.0289644,
+            ):
+            """Calculate factor of barrometric height formula as described here: https://en.wikipedia.org/wiki/Barometric_formula
+
+            Args:
+                h (fleat): height for factor calculation [m]
+                Tb (float, optional): reference temperature [K]. Defaults to 288.15.
+                hb (float, optional): height of reference [m]. Defaults to 0.
+                R (float, optional): universal gas constant [J/(mol*K)]. Defaults to 8.3144598.
+                g (float, optional): gravitational acceleration [m/s^2]. Defaults to 9.80665.
+                M (float, optional): molar mass of Earth's air [kg/mol]. Defaults to 0.0289644.
+
+            Returns:
+                float: fraction of pressure at height h compared to height hb
+            """    
+            factor = np.exp(-g * M * (h - hb)/(R * Tb))
+            return factor
+
+    def add_map(self, ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]],
+                **grid_kwargs,
+               ):
+        """Add map to axes using cartopy.
 
         Args:
-            h (fleat): height for factor calculation [m]
-            Tb (float, optional): reference temperature [K]. Defaults to 288.15.
-            hb (float, optional): height of reference [m]. Defaults to 0.
-            R (float, optional): universal gas constant [J/(mol*K)]. Defaults to 8.3144598.
-            g (float, optional): gravitational acceleration [m/s^2]. Defaults to 9.80665.
-            M (float, optional): molar mass of Earth's air [kg/mol]. Defaults to 0.0289644.
+            ax (Axes): Axes to add map to
+            feature_list (list, optional): Features of cartopy to be added. Defaults to [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]].
+            extent (list, optional): list to define region ([lon1, lon2, lat1, lat2]). Defaults to None.
 
         Returns:
-            float: fraction of pressure at height h compared to height hb
+            Axes: Axes with added map
+            Gridliner: cartopy.mpl.gridliner.Gridliner for further settings
         """    
-        factor = np.exp(-g * M * (h - hb)/(R * Tb))
-        return factor
+        ax.set_extent(self._kwargs["extent"], crs=ccrs.PlateCarree()) if self._kwargs["extent"] is not None else None
+        for feature in feature_list:
+            feature, kwargs = feature if isinstance(feature, list) else [feature, dict()]
+            ax.add_feature(feature, **kwargs)
+        grid = True
+        gl = None
+        try:
+            grid = grid_kwargs["grid"]
+            grid_kwargs.pop("grid", None)
+        except KeyError:
+            pass
+        if grid:
+            grid_kwargs =  dict(draw_labels=True, dms=True, x_inline=False, y_inline=False) if not bool(grid_kwargs) else grid_kwargs
+            gl = ax.gridlines(**grid_kwargs)
+            gl.top_labels = False
+            gl.right_labels = False
+        
+        return ax, gl
+
+    def subplots(self, *args, **kwargs):
+        default_kwargs = dict(subplot_kw=dict(projection=ccrs.PlateCarree()))
+        for key, val in kwargs.items():
+            default_kwargs[key] = val
+        kwargs = default_kwargs
+        fig, ax = plt.subplots(*args, **kwargs)
+        return fig, ax
+    
+    def enhancement(self, ct_file=None, p_surf=1013, allow_read=True):
+        if self._enhancement is None:
+            try:
+                assert allow_read
+                with open(os.path.join(self._dir,"enhancement.txt"), "r") as f:
+                    self._enhancement = float(f.read())
+            except (FileNotFoundError, AssertionError):    
+                self._enhancement = calc_enhancement(self.footprint.dataset, ct_file, p_surf, self.stop.date(), self.start.date())
+                with open(os.path.join(self._dir,"enhancement.txt"), "w") as f:
+                    f.write(str(self._enhancement))
+        
+        return self._enhancement
+    
+    def background(self, allow_read=True):
+        if self._background is None:
+            try:
+                assert allow_read
+                with open(os.path.join(self._dir, "background.txt"), "r") as f:
+                    self._background = float(f.read())
+            except (FileNotFoundError, AssertionError):    
+                self._background = np.sum(self.trajectories.endpoints.co2 * self.trajectories.endpoints.pressure_weight)[0]
+
+                with open(os.path.join(self._dir, "background.txt"), "w") as f:
+                    f.write(str(self._background))
+        return self._background
+
+    
