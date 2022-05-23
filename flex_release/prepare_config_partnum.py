@@ -22,4 +22,4 @@ if __name__ == "__main__":
         num_str = "0"*(3 - len(num_str)) + num_str
         outpath = os.path.join(args.outpath, name + num_str + "k.yaml")
         
-        config_total_parts(args.config, outpath, part_num)
+        config_total_parts(args.config, outpath, int(part_num))

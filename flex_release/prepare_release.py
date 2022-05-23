@@ -92,7 +92,8 @@ if __name__ == "__main__":
                 save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES)
                 save_counter +=1
                 RELEASES = load_header(config["species"])
-        print(f"Save destination: {os.path.join(args.out_dir, args.out_name)}")
+        print(f"Save destination: {os.path.join(args.out_dir, args.out_name)}(_#)")
+        print(f"Number of stations: {len(coords)}")
         print(f"Total number of particles: {np.sum(part_nums)*len(coords)}")
         # split version 3: no split
         save_release(args.out_dir, args.out_name, RELEASES, file_path) if not split else None
