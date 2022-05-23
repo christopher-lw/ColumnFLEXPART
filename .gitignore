@@ -19,7 +19,8 @@ flex_release/output/*
 flex_release/configs/*
 flex_release/.ipynb_checkpoints
 *test*
-!flex_release/configs/wu.yaml
+!flex_release/configs/unit.yaml
 !flex_release/configs/pressure_wu.yaml
 !flex_release/configs/pressure.yaml
 !open_data/data/co2_annmean_gl.csv
+open_data/showcase.ipynb

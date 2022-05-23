@@ -139,98 +139,47 @@ def setup_coords(config):
 class ColumnSetup():
     def __init__(self, config):
         self.config = config
-        self.regions = config["regions"]
+        self.height_low = config["height_low"]
+        self.height_up = config["height_up"]
         self.dh = config["dh"]
-        self.height = self.regions[0]*1e3
-        self.height_levels = [self.height]
+        self.n_total = config["n_total"]
+        self.height_levels = []
         self.part_nums = []
-        self.new_part_nums = []
-        self.new_heights = []
-        
-        self.prepare_dh()
-        self.prepare_config()
-        self.run()
+        self.n_levels = int((self.height_up - self.height_low) * 1e3 / self.dh)
 
-    def run(self):
-        for i, region in enumerate(self.regions[1:]):
-            self.new_heights = []
-            self.new_part_nums = []
-            while self.height < region*1e3:
-                self.get_height(i)
-                self.add_new_height()
-                self.add_part_nums(i)
-            self.extend_height_levels()
-            self.process_part_nums(i)
-            self.extend_part_nums()
-        
-        self.height_levels = np.array(self.height_levels)
-        self.part_nums = np.array(self.part_nums).round(0).astype(int)
-
-
-    def prepare_dh(self):
-        if not isinstance(self.dh, list): self.dh = [self.dh for i in range(len(self.regions)-1)]
-
-    def add_new_height(self):
-        self.new_heights.append(self.height)
-
-    def get_height(self, i):
-        self.height += self.dh[i]
-
-    def extend_height_levels(self):
-        self.height_levels.extend(self.new_heights)
-
-    def extend_part_nums(self):
-        self.part_nums.extend(self.new_part_nums)
+        self.get_height_levels()
+        self.get_part_nums()
     
-    def prepare_config(self):
-        pass
-    
-    def process_part_nums(self, i):
-        pass
-    
-    def add_part_nums(self, i):
+    def get_height_levels(self):
+        self.height_levels = np.linspace(self.height_low*1e3, self.height_up*1e3, self.n_levels + 1).astype(int)
+
+    def get_part_nums(self):
         pass
 
-class WuColumnSetup(ColumnSetup):
+class UnitColumnSetup(ColumnSetup):
     def __init__(self, config):
         super().__init__(config)
-
-    def prepare_config(self):
-        if not isinstance(self.config["dn"], list): self.config["dn"] = [self.config["dn"] for i in range(len(self.regions)-1)]
     
-    def add_part_nums(self, i):
-        self.part_nums.append(self.config["dn"][i])
+    def get_part_nums(self):
+        dn = self.n_total / self.n_levels
+        self.part_nums = np.array([dn] * self.n_levels, dtype=int)
 
 class PressureColumnSetup(ColumnSetup):
     def __init__(self, config):
         super().__init__(config)
 
-    def process_part_nums(self, i):
-        if i == len(self.regions)-2:
-            height_levels = np.array(self.height_levels)
-            diff_heights = height_levels[1:] - height_levels[:-1]
-            mid_heights = (height_levels[:-1] + height_levels[1:])/2
-            factors = pressure_factor(mid_heights)
-            norm = factors[mid_heights <= self.regions[1]*1e3].sum()
-            factors = factors/norm * diff_heights/self.dh[0]
-            self.new_part_nums = list(self.config["lowest_region_n"] * factors)
-
-class PressureWuColumnSetup(ColumnSetup):
-    def __init__(self, config):
-        super().__init__(config)
-
-    def process_part_nums(self, i):
-        factors = pressure_factor(np.array(self.new_heights))
-        factors = factors/np.sum(factors)
-        self.new_part_nums = list(np.array(self.config["region_n"][i]) * factors)
+    def get_part_nums(self):
+        mid_heights = (self.height_levels[1:] + self.height_levels[:-1]) / 2
+        factors = pressure_factor(mid_heights)
+        factors = factors / np.sum(factors)
+        self.part_nums = self.n_total * factors
+        self.part_nums = self.part_nums.astype(int)
 
 def setup_column(config):
-    if config["column_mode"] == "wu":
-        setup = WuColumnSetup(config)
+    if config["column_mode"] == "unit":
+        setup = UnitColumnSetup(config)
     elif config["column_mode"] == "pressure":
         setup = PressureColumnSetup(config)
-    elif config["column_mode"] == "pressure_wu":
-        setup = PressureWuColumnSetup(config)
     elif config["column_mode"] == "unit_single":
         setup = UnitSinglePartColumnSetup(config)
     elif config["column_mode"] == "pressure_single":
@@ -247,6 +196,8 @@ def config_total_parts(config_path, output_path, total_parts):
             dh = config["dh"][i]
             levels += (region-config["regions"][i])*1e3//dh
         config["dn"] = int(total_parts/levels)
+    
+
 
     elif config["column_mode"] == "pressure":
         assert len(config["regions"]) == 2, "For pressure setup use only one region [start, end]"

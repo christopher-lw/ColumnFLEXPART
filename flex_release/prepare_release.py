@@ -20,9 +20,10 @@ if __name__ == "__main__":
     parser.add_argument("config", type=str, help="path to config file")
     parser.add_argument("--out_dir", type=str, default="output", help="path of directory for output files (default is 'output')")
     parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file(default is 'RELEASES')")
-    parser.add_argument("--split", type=str, help="If and how to split the output release files. 'station' to split according the station, else int n to split into n parts. (Number of releases should be devisable by n)")
+    parser.add_argument("--split", type=str, default="station", help="If and how to split the output release files. 'station' to split according the station, else int n to split into n parts. (Number of releases should be devisable by n)")
     args = parser.parse_args()
     
+    # check if only one ore multiple RELEASES files are created
     if os.path.isdir(args.config):
         dir_path = args.config
         file_names = os.listdir(dir_path)
@@ -30,18 +31,21 @@ if __name__ == "__main__":
         dir_path, file_names = args.config.rsplit("/", 1)
         file_names = [file_names]
     
+    # start of file construction
     for file in file_names:
         file_path = os.path.join(dir_path, file)
         if len(file_names) > 1:
+            # get output name without ".yaml"
             args.out_name = file.split(".")[0]
         
         with open(file_path) as f:
             config = dict(yaml.full_load(f))
-
+        # GET PARAMETERS 
         zkind = config["zkind"]
         mass = config["mass"]
-
+        # calcualte height_levels and particle numbers according to mode
         height_levels, part_nums = setup_column(config)
+        #get coordinates and times of releases either from config or read from file
         coords = setup_coords(config)
         times = setup_times(config)
 
@@ -56,6 +60,7 @@ if __name__ == "__main__":
         save_counter = 0
         release_number = len(coords)*len(part_nums)
 
+        # set on how to split releases
         split = False
         split_by = None
         if args.split is not None:
@@ -66,24 +71,28 @@ if __name__ == "__main__":
                 split = True
                 split_by = int(args.split)
                 assert release_number % split_by == 0, f"If int is given for split argument it has to be denominator of number of releases ({release_number})"
-
+        
+        # SAVE PARAMETERS INTO RELEASES FILES
         for i, ((lon1, lon2, lat1, lat2), (date1, time1, date2, time2)) in enumerate(zip(coords, times)):
             for j, parts in enumerate(part_nums):
                 comment = f'"coords:{(lon1, lon2, lat1, lat2)}, height:{height_levels[j]}, time:{(date1, time1, date2, time2)}"'
                 z1 = height_levels[j]
                 z2 = height_levels[j if config["discrete"] else j+1]
+                # insert paratmeters into RELEASES file 
                 RELEASES.extend(write_to_dummy(date1, time1, date2, time2, lon1, lon2,
                     lat1, lat2, z1, z2, zkind, mass, parts, comment))
                 release_counter += 1
+                # split verison 1: by number of release
                 if split and isinstance(split_by, int) and release_number and release_counter%(release_number//split_by)==0:
                     save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES, args.config)
                     save_counter +=1
                     RELEASES = load_header(config["species"])
+            # split verion 2: by station
             if split and split_by == "station":
                 save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES)
                 save_counter +=1
                 RELEASES = load_header(config["species"])
         print(f"Save destination: {os.path.join(args.out_dir, args.out_name)}")
         print(f"Total number of particles: {np.sum(part_nums)*len(coords)}")
-
+        # split version 3: no split
         save_release(args.out_dir, args.out_name, RELEASES, file_path) if not split else None
