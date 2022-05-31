@@ -462,346 +462,9 @@ def select_extent(xarr, lon1, lon2, lat1, lat2):
     xarr = xarr.where((xarr.latitude >= lat1) & (xarr.latitude <= lat2), drop=True)
     return xarr
 
-class FlexDataset():
-    """Class to handle nc output files of FLEXPART
-    """    
-    def __init__(self, nc_path, extent=[-180, 180, -90, 90], datakey="spec001_mr", chunks=None, with_footprints=True, **kwargs):
-        self._nc_path_ = nc_path
-        self._chunks_ = chunks if chunks is not None else "auto"
-        self._datakey_ = datakey
-        self.DataSet = xr.open_dataset(nc_path, chunks=self._chunks_)
-        self.directory, self.file = nc_path.rsplit("/", 1)
-        self.DataArrays = []
-        self.stations = []
-        self.extent = extent
-        self.Footprints = []
 
-        self.get_DataArrays(self._datakey_)
 
-        self.get_stations()
-        if with_footprints:
-            self.get_Footprints()
 
-        self.name = None
-        self.station_names = val_to_list(type(None), None, len(self.DataArrays))
-        self.cmaps = val_to_list(type(None), None, len(self.DataArrays))
-        self.norm = None
-        self.set_plot_attributes(**kwargs)
-
-    def set_plot_attributes(self, **kwargs):
-        if "name" in kwargs.keys():
-            self.name = kwargs["name"]
-        if "station_names" in kwargs.keys():
-            self.station_names = kwargs["station_names"]
-        if "cmaps" in kwargs.keys():
-            self.cmaps = val_to_list(str, kwargs["cmaps"], len(self.DataArrays))
-        if "norm" in kwargs.keys():
-            self.norm = kwargs["norm"]
-    
-    def subplots(self, *args, **kwargs):
-        default_kwargs = dict(subplot_kw=dict(projection=ccrs.PlateCarree()))
-        for key, val in kwargs.items():
-            default_kwargs[key] = val
-        kwargs = default_kwargs
-        fig, ax = plt.subplots(*args, **kwargs)
-        return fig, ax
-        
-    def plot(self, ax, station, time, pointspec, plot_func=None, plot_station=False, station_kwargs=dict(color="black"), **kwargs):
-        """Plots one DataArray by index at sum of times in time and pointspec
-
-        Args:
-            ax (Axes): Axes to plot on
-            station (int/list): Index of DataArray to plot
-            time (int/list): time indices
-            pointspec (int/list): release indices
-            plot_func (str, optional): Name of plotfunction to be used. Defaults to None.
-            plot_station (bool, optional): If true scatterplot of stations position is plotted. Defaults to True.
-            station_kwargs (dict, optional): kwargs to pass to scatter for plot_station. Defauls to dict(color="black").
-
-        Returns:
-            Axes: Axes with plot
-        """        
-        default_kwargs = dict(cmap=self.cmaps[station], norm=copy.copy(self.norm))
-        for key, val in kwargs.items():
-            default_kwargs[key] = val
-        
-        kwargs = default_kwargs
-
-        xarr = self.sum(station, time, pointspec)
-        xarr = xarr.where(xarr != 0)[:,:,...]
-
-        if plot_func is None:
-            xarr.plot(ax=ax, **kwargs)
-        else:
-            getattr(xarr.plot, plot_func)(ax=ax, **kwargs)
-        if plot_station:
-            ax.scatter(*self.stations[station], **station_kwargs)
-        return ax
-        
-    
-    def plot_footprint(self, ax, station, plot_func=None, plot_station=False, station_kwargs=dict(color="black"), **kwargs):
-        """Plots Footprint of a station with index index
-
-        Args:
-            ax (Axes): Axes to plot on
-            station (int): Index of the station
-            plot_func (str, optional): Name of plotfunction to use. Defaults to None.
-            plot_station (bool, optional): If true scatterplot of stations position is plotted. Defaults to True.
-            station_kwargs (dict, optional): kwargs to pass to scatter for plot_station. Defauls to dict(color="black").
-
-        Returns:
-            Axes: Axes with plot
-        """        
-        default_kwargs = dict(cmap=self.cmaps[station], norm=copy.copy(self.norm))
-        for key, val in kwargs.items():
-            default_kwargs[key] = val
-        
-        kwargs = default_kwargs
-
-        if self.Footprints == []:
-            self.get_Footprints()
-        fp = self.Footprints[station].where(self.Footprints[station]!=0)[0,0,...]
-        if plot_func is None:
-            fp.plot(ax=ax, **kwargs)
-        else:
-            getattr(fp.plot, plot_func)(ax=ax, **kwargs)
-        if plot_station:
-            ax.scatter(*self.stations[station], **station_kwargs)
-        return ax
-    
-    def add_map(self, ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]],
-                **grid_kwargs,
-               ):
-        """Add map to axes using cartopy.
-
-        Args:
-            ax (Axes): Axes to add map to
-            feature_list (list, optional): Features of cartopy to be added. Defaults to [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]].
-            extent (list, optional): list to define region ([lon1, lon2, lat1, lat2]). Defaults to None.
-
-        Returns:
-            Axes: Axes with added map
-            Gridliner: cartopy.mpl.gridliner.Gridliner for further settings
-        """    
-        ax.set_extent(self.extent, crs=ccrs.PlateCarree()) if self.extent is not None else None
-        for feature in feature_list:
-            feature, kwargs = feature if isinstance(feature, list) else [feature, dict()]
-            ax.add_feature(feature, **kwargs)
-        grid = True
-        gl = None
-        try:
-            grid = grid_kwargs["grid"]
-            grid_kwargs.pop("grid", None)
-        except KeyError:
-            pass
-        if grid:
-            grid_kwargs =  dict(draw_labels=True, dms=True, x_inline=False, y_inline=False) if not bool(grid_kwargs) else grid_kwargs
-            gl = ax.gridlines(**grid_kwargs)
-            gl.top_labels = False
-            gl.right_labels = False
-        
-        return ax, gl
-
-    def select_extent(self, xarr):
-        """Select extent of xarray.DataArray with geological data
-
-        Args:
-            xarr (xarray.DataArray): ...returns
-
-        Returns:
-            xarray.DataArray: cut xarray
-        """    
-        lon1, lon2, lat1, lat2 = self.extent
-        xarr = xarr.where((xarr.longitude >= lon1) & (xarr.longitude <= lon2), drop=True)
-        xarr = xarr.where((xarr.latitude >= lat1) & (xarr.latitude <= lat2), drop=True)
-        return xarr
-    
-    def get_DataArrays(self, datakey):
-        """Splits xarray.Dataset into xarray.Dataarrays according to value in datakey
-
-        Args:
-            datakey (str): Name of key to split by
-        """
-        self.DataArrays =[]   
-        values = np.unique(self.DataSet.RELLNG1.values)
-        index_sets = []
-        for val in values:
-            index_sets.append(np.concatenate(np.argwhere(self.DataSet.RELLNG1.values == val)))
-        DataArray = self.DataSet[datakey]
-        for ind in index_sets:
-            self.DataArrays.append(DataArray.isel(dict(pointspec = ind)))
-    
-    @to_tuple(["time", "pointspec"],[2,3])
-    @cache
-    def sum(self, station, time, pointspec):
-        """Computes sum with dask
-
-        Args:
-            station (int): Index of station
-            time (list): List of indices
-            pointspec (list): List of pointspec indices
-
-        Returns:
-            DataArray: sumemd dataarray
-        """        
-        xarr = self.DataArrays[station]
-        time = list(time)
-        pointspec = list(pointspec)
-        xarr = xarr.isel(dict(time=time, pointspec=pointspec)).sum(dim=["time", "pointspec"]).compute()
-        return xarr
-
-    def save_Footprints(self):
-        """Saves Footprints
-
-        Args:
-            include_sums (bool, optional): _description_. Defaults to True.
-        """        
-        sum_path = os.path.join(self.directory, "Footprint_")
-        for i, fp in enumerate(self.Footprints):
-            fp.to_netcdf(f"{sum_path}{i}.nc")
-            
-    
-    def calc_Footprints(self):
-        """Calculates Footprints
-        """
-        self.Footprints = []
-        for i, xarr in enumerate(self.DataArrays):
-            station, time, pointspec = i, np.arange(len(xarr.time)), np.arange(len(xarr.pointspec))
-            xarr_sum = self.sum(station, time, pointspec)
-            self.Footprints.append(xarr_sum)
-    
-    def load_Footprints(self):
-        """Loads Footprints from directory of DataSet data
-        """
-        self.Footprints = []
-        files = os.listdir(self.directory)
-        path = os.path.join(self.directory, "Footprint_0.nc")
-        if os.path.exists(path):
-            max_ind = 0  
-            for f in files:
-                if "Footprint" in f:
-                    ind = int(f.rsplit("_")[-1][0])
-                    max_ind = ind if ind > max_ind else max_ind
-            for i in range(max_ind+1):
-                self.Footprints.append(xr.load_dataarray(os.path.join(self.directory, f"Footprint_{i}.nc")))
-        else:
-            raise FileNotFoundError
-        
-    def get_Footprints(self):
-        """Get footprints from either loading of calculation
-        """        
-        try:
-            self.load_Footprints()
-            print(f"Loaded Footprints from {self.directory}")
-        except FileNotFoundError:
-            print("No total footprints found to load. Calculation...")
-            self.calc_Footprints()
-            print(f"Saving Footprints to {self.directory}")
-            self.save_Footprints()
-            print("Done")
-    
-    def get_stations(self):
-        longs, ind = np.unique(self.DataSet["RELLNG1"].values, return_index=True)
-        lats = self.DataSet["RELLAT1"][ind].values
-        self.stations = np.column_stack((longs,lats))
-    
-    @to_tuple(["stations"],[1])
-    @cache
-    def vmin(self, stations=None, footprint=True, ignore_zero=True):
-
-        if stations is None:
-            stations = np.arange(len(self.stations))
-        
-        data = self.Footprints
-        if not footprint:
-            data = self.DataArrays
-        
-        vmins = []
-        for i in stations:
-            values = data[i]
-            if ignore_zero:
-                values = values.where(values!=0)
-            if footprint:
-                vmins.append(np.nanmin(values.values))
-            else:
-                vmins.append(values.min().compute())
-        return np.min(vmins)
-    
-    @to_tuple(["stations"],[1])
-    @cache
-    def vmax(self, stations=None, footprint=True, ignore_zero=True):
-        
-        if stations is None:
-            stations = np.arange(len(self.stations))
-        
-        data = self.Footprints
-        if not footprint:
-            data = self.DataArrays
-        
-        vmaxs = []
-        for i in stations:
-            values = data[i]
-            if ignore_zero:
-                values = values.where(values!=0)
-            if footprint:
-                vmaxs.append(np.nanmax(values.values))
-            else:
-                vmaxs.append(values.max().compute())
-        return np.max(vmaxs)
-
-class FlexDataCollection(FlexDataset):
-    def __init__(self, *args, **kwargs):
-        self._paths_ = args
-        self._kwargs_ = kwargs
-        self.DataSets = []
-        self.stations = []
-        self.Footprints = []
-        self.extent = [-180,180,-89,89]
-        if "extent" in kwargs.keys():
-            self.extent=kwargs["extent"]
-        for path in self._paths_:
-            self.DataSets.append(FlexDataset(path, **kwargs))
-        self.get_stations()
-        self.get_Footprints()
-        
-    def get_stations(self):
-        """_summary_
-        """        
-        self.stations = []
-        for ds in self.DataSets:
-            self.stations.extend(ds.stations)
-        self.stations = np.unique(self.stations, axis=0)
-    
-    def get_Footprints(self):
-        self.Footprints = []
-        for station in self.stations:
-            new_Footprints = 0
-            for ds in self.DataSets:
-                for i, ds_stat in enumerate(np.array(ds.stations)):
-                    if (ds_stat == station).all():
-                        new_Footprints += ds.Footprints[i]
-            self.Footprints.append(new_Footprints)
-
-    def plot_footprint(self, ax, station, plot_func=None, plot_station=False, station_kwargs=dict(color="black"), **kwargs):
-        """
-        Plots Footprint of a station with index index
-
-        Args:
-            ax (Axes): Axes to plot on
-            station (int): Index of the station
-            plot_func (str, optional): Name of plotfunction to use. Defaults to None.
-            plot_station (bool, optional): If true scatterplot of stations position is plotted. Defaults to True.
-            station_kwargs (dict, optional): kwargs to pass to scatter for plot_station. Defauls to dict(color="black").
-
-        Returns:
-            Axes: Axes with plot
-        """ 
-        return super().plot_footprint(ax, station, plot_func, plot_station, station_kwargs, **kwargs)
-
-    def add_map(self, ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]], **grid_kwargs):
-        return super().add_map(ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]], **grid_kwargs)
-        
-          
 def calc_enhancement(fp_data, ct_file, p_surf, startdate, enddate):
 
     def barometric(a, b):
@@ -921,7 +584,7 @@ class FlexDataset2():
         
         release = dict()
         for i, line in enumerate(lines):
-            lines[i] = line.split('=')[1].strip()[:-1]
+            lines[i] = line.split('=')[1].strip()[:-1].strip()
         
         release['start'] = datetime.strptime(lines[2] + lines[3], "%Y%m%d%H%M%S")
         release['stop'] = datetime.strptime(lines[0] + lines[1], "%Y%m%d%H%M%S")
@@ -1079,6 +742,7 @@ class FlexDataset2():
                 date = str(date)
                 file_list.append(os.path.join(self._ct_dir, self._ct_dummy + date + ".nc"))
             ct_data = xr.open_mfdataset(file_list, combine="by_coords")
+            
             self.ct_data = ct_data[["co2", "pressure"]].compute()
             return self.ct_data
 
@@ -1090,6 +754,12 @@ class FlexDataset2():
             print(f"Saved endpoints to {save_path}")
         
         def load_endpoints(self, name=None, dir=None):
+            """Load endpoints from endpoints.pkl file or file with personalized name.
+
+            Args:
+                name (str, optional): Name of output. Defaults to None (results in endpoints.pkl).
+                dir (dir, optional): Directory for file. Defaults to None.
+            """            
             if name is None:
                 name="endpoints.pkl"
             if dir is None:
@@ -1098,6 +768,18 @@ class FlexDataset2():
             self.endpoints = pd.read_pickle(read_path).sort_values(self._id_key)
 
         def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
+            """Returns CO2 at positions of the endpoints of the particles. Result is also saved to endpoints. Pressure weights are also calculated based on the pointspec value of the particles.
+
+            Args:
+                exists_ok (bool, optional): Flag for recalculation if co2 was allready calculated. Defaults to True.
+                extent (list, optional): Borders for optional endpoint calculateion if no endpoints exist so far. Defaults to None.
+                ct_dir (str, optional): Directory for carbon tracker data. Defaults to None.
+                ct_dummy (str, optional): Start of each Carbon Tracker file util the time stamp. Defaults to None.
+                pressure_weight (bool, optional): Flag to also add pressure weights in the enpoints dataframe. Defaults to True.
+
+            Returns:
+                _type_: _description_
+            """                       
             if self.endpoints is None:
                 print("No endpoints found. To load use load_endpoints(). Calculation of endpoints...")
                 _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
@@ -1181,6 +863,12 @@ class FlexDataset2():
         return ax, gl
 
     def subplots(self, *args, **kwargs):
+        """Same as matplotlib function only with projection=ccrs.PlateCarree() as default subplot_kw.
+
+        Returns:
+            Figure: figure
+            Axes: axes of figure 
+        """        
         default_kwargs = dict(subplot_kw=dict(projection=ccrs.PlateCarree()))
         for key, val in kwargs.items():
             default_kwargs[key] = val
@@ -1189,6 +877,16 @@ class FlexDataset2():
         return fig, ax
     
     def enhancement(self, ct_file=None, p_surf=1013, allow_read=True):
+        """Returns enhancement based on Carbon Tracker emmission data and the footprint. Is either calculated, loaded, or read from class.
+
+        Args:
+            ct_file (str, optional): Name of Carbon Tracker (only shared part not the time stamp). Defaults to None.
+            p_surf (float, optional): Surface pressure in millibars. Defaults to 1013.
+            allow_read (bool, optional): Flag to allow reading of result from file . Defaults to True.
+
+        Returns:
+            float: Enhancement of CO2 in ppm
+        """        
         if self._enhancement is None:
             try:
                 assert allow_read
@@ -1202,6 +900,14 @@ class FlexDataset2():
         return self._enhancement
     
     def background(self, allow_read=True):
+        """Returns background calculation in ppm based on trajectories in trajectories.pkl file. Is either loaded from file, calculated or read from class. 
+
+        Args:
+            allow_read (bool, optional): Flag to allow reading of result from file. Defaults to True.
+
+        Returns:
+            float: Background CO2 in ppm
+        """        
         if self._background is None:
             try:
                 assert allow_read

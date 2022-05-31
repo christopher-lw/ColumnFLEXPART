@@ -137,35 +137,69 @@ def remove_duplicates(scores, match_ind):
 def calculate_score(diff):
     d = np.abs(diff)    
     return 1e6-d
-    
+
+def listdir_fullpath(d):
+    return [os.path.join(d, f) for f in os.listdir(d)]
+
+def in_dir(path, string):
+    for file in os.listdir(path):
+        if string in file:
+            return True
+    else:
+        return False
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Script to convert partposit files in directorz to nc files.")
     parser.add_argument("dir_path", type=str, help="Directory with binary files to convert.")
     parser.add_argument('--rm', action='store_true', help="Flag to remove binary files.")
     parser.add_argument('--use_pointspec', action="store_true", help="Flag to use pointspec as id")
+    #parser.add_argument('--multiple', action="store_true", help="Flag to look for multiple directories to convert in dir_path")
     args = parser.parse_args()
-    dir_path = args.dir_path
-    for file in os.listdir(dir_path):
-        if "partposit" in file and not "nc" in file:
-            path = os.path.join(dir_path, file)
-            if os.path.exists(path + ".nc"):
-                print(f"{path} allready converted.")
+    dir_paths = [args.dir_path]
+
+    found_file = False
+    for file in os.listdir(dir_paths[0]):
+        if "grid_time" in file and ".nc" in file:
+            found_file = True
+    if not found_file: 
+        dir_paths = listdir_fullpath(args.dir_path)
+        print(f"Found following directories to convert:\n {dir_paths}")
+        inp = input("Continue converting files? ([y]/n) ") or "y"
+        assert inp == "y", "Insert y to continue."
+
+    for dir_path in dir_paths:
+        if not in_dir(dir_path, "partposit"):
+            print(f"No partpoist files for {dir_path}")
+            continue
+
+        for file in os.listdir(dir_path):
+            if "partposit" in file and not "nc" in file:
+                path = os.path.join(dir_path, file)
+                if os.path.exists(path + ".nc"):
+                    print(f"{path} allready converted.")
+                    if args.rm:
+                        os.remove(path)
+                        print(f"Deleted binary file {path}")
+                    continue
+                print(file)
+                partposit_bin_to_nc(path, remove_bin=args.rm, use_pointspec=args.use_pointspec)
+        
+        files = []
+        for file in os.listdir(dir_path):
+            if "partposit" in file and ".nc" in file:
+                files.append(os.path.join(dir_path, file))
+        
+        xarr = xr.open_mfdataset(files)
+        df = xarr.to_dataframe().reset_index()
+        if not args.use_pointspec:
+            if os.path.exists(os.path.join(dir_path, "trajectories.nc")):
+                print("trajectories.nc file allready exists.")
                 continue
-            print(file)
-            partposit_bin_to_nc(path, remove_bin=args.rm, use_pointspec=args.use_pointspec)
-    
-    files = []
-    for file in os.listdir(dir_path):
-        if "partposit" in file and ".nc" in file:
-            files.append(os.path.join(dir_path, file))
-            
-    xarr = xr.open_mfdataset(files)
-    df = xarr.to_dataframe().reset_index()
-    if not args.use_pointspec:
-        print("Repairing trajectories")
-        df = repair_trajectories(df)
-    df = df[~np.isnan(df.longitude)]
-    df = df.set_index(["time", "id"])
-    xarr = df.to_xarray()
-    xarr.to_netcdf(os.path.join(dir_path, "trajectories.nc"))
-    print(f"Full trajectories saved to: {dir_path}/trajectories.nc")
+            else:
+                print("Repairing trajectories")
+                df = repair_trajectories(df)
+        df = df[~np.isnan(df.longitude)]
+        df = df.set_index(["time", "id"])
+        xarr = df.to_xarray()
+        xarr.to_netcdf(os.path.join(dir_path, "trajectories.nc"))
+        print(f"Full trajectories saved to: {dir_path}/trajectories.nc")
