@@ -21,6 +21,18 @@ def get_run_states():
     for q in queue:
         states.append(q.split()[-4])
     return states
+def set_start(start, shift=0, step=None):
+    if step is not None:
+        assert np.timedelta64(1, "D") % np.timedelta64(step, "h") == 0, f"24 hours have to be devisable by value of step. (Your value: {step})"
+        date = start.astype("datetime64[D]")
+        shifts_late = np.arange(np.timedelta64(shift, "h"), np.timedelta64(shift+24, "h"), np.timedelta64(step, 'h'), dtype="timedelta64[h]")
+        shifts_early = np.arange(np.timedelta64(shift, "h"), np.timedelta64(shift-24, "h"), - np.timedelta64(step, 'h'), dtype="timedelta64[h]")[::-1]
+        shifts = np.concatenate([shifts_early, shifts_late])
+        start_vals = date + shifts
+        ret = start_vals[start_vals > start][0].astype("datetime64[s]")
+    else: 
+        ret = start + np.timedelta64(1, "h")
+    return ret
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tool to start multiple FLEXPART runs with different RELAESES files")
@@ -30,6 +42,9 @@ if __name__ == "__main__":
     parser.add_argument("release_path", type=str, help="path of directory with RELEASES files (if not absolute path it starts from options_path)")
     parser.add_argument("submit_path", type=str, help="path to slurm script for submission of runs")
     parser.add_argument("--set_sim_length", type=int , default=0, help="sets simulation lenghts in days for each run automatically sets start one hour before release")
+    parser.add_argument("--start_shift", type=int, default=0, help="if set_sim_lenght is set but only certain start values are admissable (e.g. every 3 hours starting at 1 o'clock set to 1 and start_step to 3)")
+    parser.add_argument("--start_step", type=int, default=None, help="steps from start in which are admissable start values for simulation")
+    parser.add_argument("--max_jobs", type=int, default=20, help="Determines maximum of slurm jobs be active at once.") 
     args = parser.parse_args()
 
     #append paths to be abolute
@@ -101,7 +116,7 @@ if __name__ == "__main__":
                         break
             start = start_date + start_time
             end = start - np.timedelta64(args.set_sim_length, "D")
-            start = start + np.timedelta64(1, "h")
+            start = set_start(start, args.start_shift, args.start_step)
             start_date, start_time = str(start).split("T")
             start_date = start_date.replace("-", "")
             start_time = start_time.replace(":", "")
@@ -127,6 +142,10 @@ if __name__ == "__main__":
         os.system(f"sbatch {args.submit_path}")
         #wait for job to start
         states = get_run_states()
+        while len(states) >= args.max_jobs:
+            time.sleep(10)
+            print(f"Maximal number of jobs active ({len(states)})")
+            states = get_run_states()   
         while states.count("R") != len(states):
             time.sleep(2)
             states = get_run_states()

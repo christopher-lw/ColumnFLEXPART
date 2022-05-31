@@ -111,14 +111,12 @@ def setup_times(config):
         times = config["times"]
 
     else:
-        assert False, "times_from_file not yet implemented"
         assert "times_file_path" in config.keys(), "First set times_file_path in config or set times_from_file to 'true'"
         with open(config["times_file_path"], "r") as f:
             lines = f.read().splitlines()
-
         times = []
         for line in lines:
-            times.append([line.split(",")])
+            times.append(line.split(","))
     return times
 
 def setup_coords(config):
@@ -126,11 +124,9 @@ def setup_coords(config):
         coords = config["coords"]
 
     else:
-        assert False, "coords_from_file not yet implemented"
         assert "coords_file_path" in config.keys(), "First set coords_file_path in config or set coords_from_file to 'true'"
         with open(config["coords_file_path"], "r") as f:
             lines = f.read().splitlines()
-
         coords = []
         for line in lines:
             coords.append(line.split(","))

@@ -20,7 +20,7 @@ if __name__ == "__main__":
     parser.add_argument("config", type=str, help="path to config file")
     parser.add_argument("--out_dir", type=str, default="output", help="path of directory for output files (default is 'output')")
     parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file(default is 'RELEASES')")
-    parser.add_argument("--split", type=str, default="station", help="If and how to split the output release files. 'station' to split according the station, else int n to split into n parts. (Number of releases should be devisable by n)")
+    parser.add_argument("--split", type=str, default="station", help="If and how to split the output release files. 'station' to split according the station, else int n to split into n parts. (Number of releases should be devisable by n, default is 'station')")
     args = parser.parse_args()
     
     # check if only one ore multiple RELEASES files are created
@@ -89,7 +89,10 @@ if __name__ == "__main__":
                     RELEASES = load_header(config["species"])
             # split verion 2: by station
             if split and split_by == "station":
-                save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES)
+                if len(coords) > 1:
+                    save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES)
+                else:
+                    save_release(args.out_dir, f"{args.out_name}", RELEASES)
                 save_counter +=1
                 RELEASES = load_header(config["species"])
         print(f"Save destination: {os.path.join(args.out_dir, args.out_name)}(_#)")
