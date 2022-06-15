@@ -145,8 +145,7 @@ def in_dir(path, string):
     for file in os.listdir(path):
         if string in file:
             return True
-    else:
-        return False
+    return False
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Script to convert partposit files in directorz to nc files.")
@@ -168,6 +167,7 @@ if __name__ == '__main__':
         assert inp == "y", "Insert y to continue."
 
     for dir_path in dir_paths:
+        if not os.path.isdir(dir_path): continue
         if not in_dir(dir_path, "partposit"):
             print(f"No partpoist files for {dir_path}")
             continue
@@ -188,18 +188,35 @@ if __name__ == '__main__':
         for file in os.listdir(dir_path):
             if "partposit" in file and ".nc" in file:
                 files.append(os.path.join(dir_path, file))
-        
-        xarr = xr.open_mfdataset(files)
+        if len(files) < 3:
+            continue
+        ################################ V IMPROVE V ###################################
+        try:
+            try:
+                xarr = xr.open_mfdataset(files)
+            except ValueError:
+                print("ValueError: Trying again without first partposit file")
+                times = [int(file.split("/")[-1].split("_")[1].split(".")[0]) for file in files]
+                times.sort()
+                files.remove(os.path.join(dir_path, f"partposit_{times[-1]}.nc"))
+                xarr = xr.open_mfdataset(files)
+        except ValueError:
+            continue
+        ################################ IMPROVE ###################################
         df = xarr.to_dataframe().reset_index()
         if not args.use_pointspec:
-            if os.path.exists(os.path.join(dir_path, "trajectories.nc")):
-                print("trajectories.nc file allready exists.")
+            if os.path.exists(os.path.join(dir_path, "trajectories.pkl")):
+                print("trajectories.pkl file allready exists.")
                 continue
             else:
                 print("Repairing trajectories")
-                df = repair_trajectories(df)
+                ################################ V IMPROVE V ###################################
+                try:
+                    df = repair_trajectories(df)
+                except IndexError:
+                    continue
+                ################################ IMPROVE ###################################
         df = df[~np.isnan(df.longitude)]
-        df = df.set_index(["time", "id"])
-        xarr = df.to_xarray()
-        xarr.to_netcdf(os.path.join(dir_path, "trajectories.nc"))
-        print(f"Full trajectories saved to: {dir_path}/trajectories.nc")
+        df = df.set_index(["time", "id", "pointspec"])
+        df.to_pickle(os.path.join(dir_path, "trajectories.pkl"))
+        print(f"Full trajectories saved to: {dir_path}/trajectories.pkl")
