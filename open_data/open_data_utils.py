@@ -11,6 +11,7 @@ import cartopy.feature as cf
 from functools import cache
 import copy
 from datetime import datetime, date
+import json
 #import geoplot
 #import contextily as ctx
 
@@ -458,80 +459,109 @@ def select_extent(xarr, lon1, lon2, lat1, lat2):
     Returns:
         xarray.DataArray: cut xarray
     """    
-    xarr = xarr.where((xarr.longitude >= lon1) & (xarr.longitude <= lon2), drop=True)
-    xarr = xarr.where((xarr.latitude >= lat1) & (xarr.latitude <= lat2), drop=True)
+    xarr = xarr.isel(longitude = (lon1 <= xarr.longitude) * (xarr.longitude <= lon2))
+    xarr = xarr.isel(latitude = (lat1 <= xarr.latitude) * (xarr.latitude <= lat2))
     return xarr
 
 
+def load_ct_data(ct_file, startdate, enddate):
+    first = True
+    for date in pd.date_range(startdate, enddate):
+        ct_single_file = ct_file+str(date.year)+str(date.month).zfill(2)+str(date.day).zfill(2)+'.nc'
+        ct_flux_day = xr.open_mfdataset(ct_single_file, combine='by_coords',drop_variables = 'time_components', chunks="auto")
+        if first:
+            first = False
+            ct_flux = ct_flux_day
+        else:
+            ct_flux = xr.concat([ct_flux, ct_flux_day],dim = 'time')
+    #sum flux components: 
+    ct_flux = ct_flux.bio_flux_opt+ct_flux.ocn_flux_opt+ct_flux.fossil_flux_imp+ct_flux.fire_flux_imp
+    ct_flux.name = 'total_flux'
 
+    #can be deleted when footprint has -179.5 coordinate
+    ct_flux = ct_flux[:,:,1:]
+    return ct_flux
+
+def get_fp_array(fp_dataset):
+    fd_array = fp_dataset.spec001_mr[0,:,:,0,:,:]
+    dt = np.timedelta64(90,'m')
+    fd_array = fd_array.assign_coords(time=(fd_array.time + dt))
+    #flip time axis
+    fd_array = fd_array.sortby('time')
+    return fd_array
+
+def combine_flux_and_footprint(flux, footprint, chunks=None):
+    fp_co2 = xr.merge([footprint, flux])
+    if chunks is not None:
+        fp_co2 = fp.co2.chunk(chunks=chunks)
+    # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
+    fp_co2 = 1/100 * fp_co2.total_flux*fp_co2.spec001_mr*0.044 #dim : time, latitude, longitude, pointspec: 36
+    #sum over time, latitude and longitude, remaining dim = layer
+    fp_co2 = fp_co2.sum(dim=['time','latitude','longitude'])
+    fp_co2 = fp_co2.compute()
+    fp_co2.name = 'CO2'
+    fp_co2 = fp_co2.to_dataset()
+    return fp_co2
 
 def calc_enhancement(fp_data, ct_file, p_surf, startdate, enddate):
+    print("using enh2")
 
     def barometric(a, b):
         func = lambda x, y: x*np.exp(-(y/7800)) #Skalenhöhe von 7.8 km passt?
         return xr.apply_ufunc(func, a, b)
 
-    def heights(p_surf, p):
-        func = lambda x, y: np.log(y/x)*(-7800) #Skalenhöhe von 7.8 km passt?
-        return xr.apply_ufunc(func, p_surf, p)
-    #-----------------------------
+    #test the right order of dates
+    assert enddate > startdate, 'The startdate has to be before the enddate'
+
+    #read CT fluxes (dayfiles) and merge into one file
+    ct_flux = load_ct_data(ct_file, startdate, enddate)
+    
+    #from .interp can be deleted as soon as FP dim fits CTFlux dim, layers repeated???? therfore only first 36
+    footprint = get_fp_array(fp_data)
+    #selct times of Footprint in fluxes
+    ct_flux = ct_flux.sel(time=slice(footprint.time.min(),footprint.time.max()))
+    
+    #get pressure levels (boundaries of layer) of FP data, needed for interpolation on GOSAT levels
+    fp_pressure_layers = barometric(p_surf, np.append(np.array([0]), fp_data.RELZZ2[:].values))
+    pressure_weights = 1/(p_surf-0.1)*(fp_pressure_layers[0:-1]-fp_pressure_layers[1:]) 
+    #FP_pressure_layers = np.array(range(numLayer,0,-1))*1000/numLayer
+    fp_co2 = combine_flux_and_footprint(ct_flux, footprint)
+    
+    molefractions = fp_co2.CO2.values
+    enhancement = (pressure_weights*molefractions).sum()
+    enhancement = enhancement*1e6
+    return enhancement
+
+
+
+def calc_enhancement2(fp_data, ct_file, p_surf, startdate, enddate):
+    print("using enh2")
+
+    def barometric(a, b):
+        func = lambda x, y: x*np.exp(-(y/7800)) #Skalenhöhe von 7.8 km passt?
+        return xr.apply_ufunc(func, a, b)
 
     #test the right order of dates
     assert enddate > startdate, 'The startdate has to be before the enddate'
 
-    #get Footprint
-    DSFP = fp_data
-    
-    #DSFP.RELZZ1.values
-
     #read CT fluxes (dayfiles) and merge into one file
-    first = True
-    for date in pd.date_range(startdate, enddate):
-        fileCT = ct_file+str(date.year)+str(date.month).zfill(2)+str(date.day).zfill(2)+'.nc'
-        DSCTfluxday = xr.open_mfdataset(fileCT, combine='by_coords',drop_variables = 'time_components', chunks="auto")
-        if first:
-            first = False
-            DSCTflux = DSCTfluxday
-        else:
-            DSCTflux = xr.concat([DSCTflux,DSCTfluxday],dim = 'time')
-    #calculate Satelite CO2 enhancement
-            
-    #sum flux components: 
-    DSCT_totalflux = DSCTflux.bio_flux_opt+DSCTflux.ocn_flux_opt+DSCTflux.fossil_flux_imp+DSCTflux.fire_flux_imp
-    DSCT_totalflux.name = 'total_flux'
-
-    #can be deleted when footprint has -179.5 coordinate
-    DSCT_totalflux = DSCT_totalflux[:,:,1:]#.compute()
+    ct_flux = load_ct_data(ct_file, startdate, enddate).compute()
     
     #from .interp can be deleted as soon as FP dim fits CTFlux dim, layers repeated???? therfore only first 36
-    FP = DSFP.spec001_mr[0,:,:,0,:,:]
-    dt = np.timedelta64(90,'m')
-    FP = FP.assign_coords(time=(FP.time + dt))
-    #flip time axis
-    FP = FP.sortby('time')#.compute()
-
+    footprint = get_fp_array(fp_data)
     #selct times of Footprint in fluxes
-    DSCT_totalflux = DSCT_totalflux.sel(time=slice(FP.time.min(),FP.time.max()))
+    ct_flux = ct_flux.sel(time=slice(footprint.time.min(),footprint.time.max()))
     
     #get pressure levels (boundaries of layer) of FP data, needed for interpolation on GOSAT levels
-    numLayer = len(FP.pointspec)
-    FP_pressure_layers = barometric(p_surf,np.append(np.array([0]),DSFP.RELZZ2[:].values))
-    PW_FP = 1/(p_surf-0.1)*(FP_pressure_layers[0:-1]-FP_pressure_layers[1:]) 
+    fp_pressure_layers = barometric(p_surf, np.append(np.array([0]), fp_data.RELZZ2[:].values))
+    pressure_weights = 1/(p_surf-0.1)*(fp_pressure_layers[0:-1]-fp_pressure_layers[1:]) 
     #FP_pressure_layers = np.array(range(numLayer,0,-1))*1000/numLayer
-
-    #combine FP and emissions
-    FPCO2_1 = xr.merge([FP, DSCT_totalflux])
-    # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
-    FPCO2_2 = 1/100*FPCO2_1.total_flux*FPCO2_1.spec001_mr*0.044 #dim : time, latitude, longitude, pointspec: 36
-    #sum over time, latitude and longitude, remaining dim = layer
-    FPCO2_tt = FPCO2_2.sum(dim=['time','latitude','longitude'])
-    FPCO2_tt.name = 'CO2'
-    FPCO2_tt = FPCO2_tt.to_dataset()
-
-    CO2_enh_molfrac = FPCO2_tt.CO2.values
-    CO2_enh_col = (PW_FP*CO2_enh_molfrac).sum()
-    CO2_enh_col = CO2_enh_col*1e6
-    return CO2_enh_col
+    fp_co2 = combine_flux_and_footprint(ct_flux, footprint, chunks=dict(time=20))
+    
+    molefractions = fp_co2.CO2.values
+    enhancement = (pressure_weights*molefractions).sum()
+    enhancement = enhancement*1e6
+    return enhancement
 
 def load_nc_partposit(dir_path, chunks=None):
     files = []
@@ -562,7 +592,7 @@ class FlexDataset2():
         [self._plot_kwargs.pop(key) for key in ['extent', 'ct_dir', 'ct_name_dummy', 'id_key', 'chunks', 'name', 'datakey', 'persist']]
 
         self.footprint = self.Footprint(self)
-        if os.path.exists(os.path.join(self._dir, "trajectories.nc")):
+        if os.path.exists(os.path.join(self._dir, "trajectories.pkl")):
             self.trajectories = self.Trajectories(self)
         else:
             print("No trajectory information found.")
@@ -570,6 +600,7 @@ class FlexDataset2():
         self.start, self.stop, self.release = self.get_metadata()
         self._background = None
         self._enhancement = None
+        self._last_boundary = None
 
     def get_metadata(self):
         #read things from the header and RELEASES.namelist
@@ -648,7 +679,7 @@ class FlexDataset2():
                     self.save_total()
             return self._total
 
-        def plot(self, ax=None, time=None, pointspec=None, plot_func=None, plot_station=True, station_kwargs=dict(color="black"), **kwargs):
+        def plot(self, ax=None, time=None, pointspec=None, plot_func=None, plot_station=True, add_map=True, station_kwargs=dict(color="black"), **kwargs):
             return_fig = False
             fig = None
             
@@ -665,6 +696,12 @@ class FlexDataset2():
                 getattr(footprint.plot, plot_func)(ax=ax, **plot_kwargs)
             if plot_station:
                 ax.scatter(self._outer.release['lon1'], self._outer.release['lat1'], **station_kwargs)
+            if add_map:
+                xlim = ax.get_xlim()
+                ylim = ax.get_ylim()
+                self._outer.add_map(ax)
+                ax.set_xlim(xlim)
+                ax.set_ylim(ylim)
             if return_fig:
                 return fig, ax
             else:
@@ -692,21 +729,19 @@ class FlexDataset2():
             self._ct_dir = outer._kwargs['ct_dir']
             self._ct_dummy = outer._kwargs['ct_name_dummy']
             self._id_key = outer._kwargs['id_key']
-            self.dataset = xr.open_dataset(os.path.join(self._dir, "trajectories.nc"))
-            self.dataset = self.dataset
-            self.dataframe = self.dataset.to_dataframe().reset_index()
+            self.dataframe = pd.read_pickle(os.path.join(self._dir, "trajectories.pkl")).reset_index()
             self._min_time = self.dataframe.time.min()
             self._max_time = self.dataframe.time.max()
             self.endpoints = None
             self.ct_data = None
 
-        def ct_endpoints(self, border=None, ct_dir=None, ct_dummy=None):
-            if border is not None:
+        def ct_endpoints(self, boundary=None, ct_dir=None, ct_dummy=None):
+            if boundary is not None:
                 df_outside = self.dataframe[
-                    ((self.dataframe.longitude < border[0]) | 
-                    (self.dataframe.longitude > border[1]) | 
-                    (self.dataframe.latitude < border[2]) | 
-                    (self.dataframe.latitude > border[3]))]
+                    ((self.dataframe.longitude < boundary[0]) | 
+                    (self.dataframe.longitude > boundary[1]) | 
+                    (self.dataframe.latitude < boundary[2]) | 
+                    (self.dataframe.latitude > boundary[3]))]
                 df_outside = df_outside.loc[df_outside.groupby(self._id_key)["time"].idxmax()].reset_index().drop(columns="index")
                 df_inside = self.dataframe[~self.dataframe[self._id_key].isin(df_outside[self._id_key])]
                 df_inside = df_inside.loc[df_inside.groupby(self._id_key)["time"].idxmin()]
@@ -714,7 +749,6 @@ class FlexDataset2():
             
             else:
                 df_total = self.dataframe.loc[self.dataframe.groupby(self._id_key)["time"].idxmin()]
-            df_total.attrs["border"] = border
 
             _ = self.load_ct_data(ct_dir, ct_dummy)
 
@@ -730,6 +764,8 @@ class FlexDataset2():
             
             self.endpoints = df_total.sort_values(self._id_key)
             self.endpoints = self.endpoints[np.sign(self.endpoints.pointspec) == 1]
+            self.endpoints.attrs["boundary"] = boundary
+            self._outer._last_boundary = boundary
             return self.endpoints
 
         def load_ct_data(self, ct_dir=None, ct_dummy=None):
@@ -766,13 +802,14 @@ class FlexDataset2():
                 dir = self._dir
             read_path = os.path.join(dir, name)
             self.endpoints = pd.read_pickle(read_path).sort_values(self._id_key)
+            self._outer._last_boundary = self.endpoints.attrs["boundary"]
 
-        def co2_from_endpoints(self, exists_ok=True, extent=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
+        def co2_from_endpoints(self, exists_ok=True, boundary=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
             """Returns CO2 at positions of the endpoints of the particles. Result is also saved to endpoints. Pressure weights are also calculated based on the pointspec value of the particles.
 
             Args:
                 exists_ok (bool, optional): Flag for recalculation if co2 was allready calculated. Defaults to True.
-                extent (list, optional): Borders for optional endpoint calculateion if no endpoints exist so far. Defaults to None.
+                boundary (list, optional): Boundaries for optional endpoint calculateion if no endpoints exist so far. Defaults to None.
                 ct_dir (str, optional): Directory for carbon tracker data. Defaults to None.
                 ct_dummy (str, optional): Start of each Carbon Tracker file util the time stamp. Defaults to None.
                 pressure_weight (bool, optional): Flag to also add pressure weights in the enpoints dataframe. Defaults to True.
@@ -782,7 +819,7 @@ class FlexDataset2():
             """                       
             if self.endpoints is None:
                 print("No endpoints found. To load use load_endpoints(). Calculation of endpoints...")
-                _ = self.ct_endpoints(extent, ct_dir, ct_dummy)
+                _ = self.ct_endpoints(boundary, ct_dir, ct_dummy)
                 print("Done")
             if self.ct_data is None:
                 _ = self.load_ct_data(ct_dir, ct_dummy)
@@ -876,7 +913,7 @@ class FlexDataset2():
         fig, ax = plt.subplots(*args, **kwargs)
         return fig, ax
     
-    def enhancement(self, ct_file=None, p_surf=1013, allow_read=True):
+    def enhancement(self, ct_file=None, boundary=None, p_surf=1013, allow_read=True, force_calculation=False, new_enh=True):
         """Returns enhancement based on Carbon Tracker emmission data and the footprint. Is either calculated, loaded, or read from class.
 
         Args:
@@ -887,19 +924,38 @@ class FlexDataset2():
         Returns:
             float: Enhancement of CO2 in ppm
         """        
-        if self._enhancement is None:
+        if self._enhancement is None or force_calculation:
             try:
-                assert allow_read
-                with open(os.path.join(self._dir,"enhancement.txt"), "r") as f:
-                    self._enhancement = float(f.read())
-            except (FileNotFoundError, AssertionError):    
-                self._enhancement = calc_enhancement(self.footprint.dataset, ct_file, p_surf, self.stop.date(), self.start.date())
-                with open(os.path.join(self._dir,"enhancement.txt"), "w") as f:
-                    f.write(str(self._enhancement))
+                assert allow_read and not force_calculation
+                self._enhancement = self.load_result("enhancement", boundary)
+            except (FileNotFoundError, KeyError, AssertionError): 
+                footprint = self.footprint.dataset.compute() if new_enh else self.footprint.dataset
+                enh_func = calc_enhancement2 if new_enh else calc_enhancement
+                if boundary is not None:
+                    footprint = select_extent(footprint, *boundary)
+                self._enhancement = enh_func(footprint, ct_file, p_surf, self.stop.date(), self.start.date())
+                self.save_result("enhancement", self._enhancement, boundary)
         
         return self._enhancement
-    
-    def background(self, allow_read=True):
+
+    def load_result(self, name, boundary=None):
+        file = os.path.join(self._dir, f"{name}.json")
+        with open(file) as f:
+            data = json.load(f)
+        result = data[str(boundary)]
+        return result
+
+    def save_result(self, name, result, boundary=None):
+        file = os.path.join(self._dir, f"{name}.json")
+        data = {}
+        if os.path.exists(file):
+            with open(file) as f:
+                data = json.load(f)
+        data[str(boundary)] = float(result)
+        with open(file, "w") as f:
+            json.dump(data, f)
+
+    def background(self, allow_read=True, boundary=None):
         """Returns background calculation in ppm based on trajectories in trajectories.pkl file. Is either loaded from file, calculated or read from class. 
 
         Args:
@@ -908,16 +964,15 @@ class FlexDataset2():
         Returns:
             float: Background CO2 in ppm
         """        
-        if self._background is None:
+        if self._background is None or boundary != self._last_boundary:
             try:
                 assert allow_read
-                with open(os.path.join(self._dir, "background.txt"), "r") as f:
-                    self._background = float(f.read())
-            except (FileNotFoundError, AssertionError):    
+                self._background = self.load_result("background", boundary)
+            
+            except (FileNotFoundError, KeyError, AssertionError):
+                assert boundary == self._last_boundary, f"No endpoints calculated for current boundary. Your input: {boundary}, boundary of endpoints {self._last_boundary}"
                 self._background = np.sum(self.trajectories.endpoints.co2 * self.trajectories.endpoints.pressure_weight)[0]
-
-                with open(os.path.join(self._dir, "background.txt"), "w") as f:
-                    f.write(str(self._background))
+                self.save_result("background", self._background, boundary)
         return self._background
 
     
