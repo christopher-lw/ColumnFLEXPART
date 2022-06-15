@@ -21,6 +21,7 @@ def get_run_states():
     for q in queue:
         states.append(q.split()[-4])
     return states
+
 def set_start(start, shift=0, step=None):
     if step is not None:
         assert np.timedelta64(1, "D") % np.timedelta64(step, "h") == 0, f"24 hours have to be devisable by value of step. (Your value: {step})"
@@ -103,7 +104,7 @@ if __name__ == "__main__":
         #write in pathnames file
         with open(os.path.join(args.flex_path, "pathnames"), "w") as f:
             f.write(paths)
-        #adjust COMMAND file to start 1 hour before fist release and end args.set_sim_length days after
+        #adjust COMMAND file to according to start step and shift and end args.set_sim_length days after
         if args.set_sim_length != 0:
             with open(os.path.join(args.options_path, "RELEASES"), "r") as f:
                 for i, line in enumerate(f):

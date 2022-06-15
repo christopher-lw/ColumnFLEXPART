@@ -106,8 +106,6 @@ if __name__ == "__main__":
         files.append(os.path.join(dir_in, file))
     xarr = xr.open_mfdataset(files, drop_variables="source_files")
 
-    
-
     extension = ".txt"
     if args.out_name == "":
         if start is not None and stop is not None:

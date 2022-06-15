@@ -4,9 +4,115 @@ import yaml
 import os
 import shutil
 import numpy as np
-from utils import *
+from utils import setup_column, yyyymmdd_to_datetime64
 
-def save_release(dir_name, file_name, release_data, config=None):
+def get_configs(config_path: str) -> tuple[str, str]:
+    if os.path.isdir(config_path):
+        dir_path = config_path
+        file_names = os.listdir(dir_path)
+    else:
+        dir_path, file_names = config_path.rsplit("/", 1)
+        file_names = [file_names]
+    return dir_path, file_names
+
+def load_header(species: int=41) -> list[str]:
+    """Load header for RELEASE file
+    Args:
+        species (int): index of species to use in run
+    Returns:
+        list: List of lines in header for RELEASE file
+    """    
+    header_path = "dummies/HEADER_dummy.txt"
+    with open(header_path) as f:
+        header = f.read().splitlines()
+    header[-2] = header[-2].replace("#", f"{species}")
+    return header
+
+def load_dummy() -> list[str]:
+    """Load dummy for RELEASE file.
+
+    Returns:
+        list: List of lines in dummy RELEASE file
+    """    
+    dummy_path = "dummies/RELEASES_dummy.txt"
+    with open(dummy_path) as f:
+        dummy = f.read().splitlines()
+    return dummy
+
+def write_to_dummy(date1: str, time1: str, date2: str, time2: str, lon1: float, lon2: float, 
+    lat1: float, lat2: float, z1: float, z2: float, zkind: int, mass: float, parts: int, comment: str) -> list[str]:
+    """Write given params of into RELEASE fiel based on a dummy.
+
+    Args:
+        date1 (str): Start date (YYYYMMDD)
+        time1 (str): Start time (HHMMSS)
+        date2 (str): End date (YYYYMMDD)
+        time2 (str): End time (HHMMSS)
+        lon1 (float): min longitude
+        lon2 (float): max longitude
+        lat1 (float): min latitude
+        lat2 (float): max latitude
+        z1 (float): min height
+        z2 (float): max height
+        zkind (int): interpretation of height
+        mass (float): emitted mass
+        parts (int): number of particles
+        comment (str): comment for release
+
+    Returns:
+        list: dummy with filled in values
+    """      
+    args = locals()
+    dummy = load_dummy()
+    
+    for i, (_, value) in enumerate(args.items()):
+        dummy[i+1] = dummy[i+1].replace("#", f"{value}")
+    
+    return dummy
+
+def setup_times(config: dict) -> list[list[str]]:
+    if not config["times_from_file"]:
+        times = config["times"]
+
+    else:
+        assert "times_file_path" in config.keys(), "First set times_file_path in config or set times_from_file to 'true'"
+        with open(config["times_file_path"], "r") as f:
+            lines = f.read().splitlines()
+        times = []
+        for line in lines:
+            times.append(line.split(","))
+    return times
+
+def setup_coords(config: dict) -> list[list[str]]:
+
+    if not config["coords_from_file"]:
+        coords = config["coords"]
+
+    else:
+        assert "coords_file_path" in config.keys(), "First set coords_file_path in config or set coords_from_file to 'true'"
+        with open(config["coords_file_path"], "r") as f:
+            lines = f.read().splitlines()
+        coords = []
+        for line in lines:
+            coords.append(line.split(","))
+    return coords
+
+def get_save_condition(counter: int, max_counter: int, multiple_days_per_file: bool, date: str, times: str, loop_ind: int) -> bool:
+    """Return bool to state whether to save or not based on the current counter, the following date and the arguments given."""    
+    if len(times) - 1 == loop_ind:
+        ret = True 
+    else:
+        next_date = times[loop_ind + 1][0]
+        ret = (counter == max_counter) or (not multiple_days_per_file and next_date != date)
+    return ret
+
+def get_save_name(coords: np.ndarray, name: str, index: int) -> str:
+    save_name = name
+    if len(coords) > 1:
+        save_name += f"_{index}"
+    return save_name
+
+def save_release(dir_name: str, file_name: str, release_data: str, config: str=None):
     os.makedirs(dir_name, exist_ok=True)
     with open(os.path.join(dir_name, file_name), 'w') as f:
         for item in release_data:
@@ -15,26 +121,23 @@ def save_release(dir_name, file_name, release_data, config=None):
     if config is not None:
         shutil.copyfile(config, os.path.join(dir_name, "config.yaml"))
 
+################################### MAIN ######################################
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Construction tool for FLEXPART RELAESE file of column receptor")
     parser.add_argument("config", type=str, help="path to config file")
     parser.add_argument("--out_dir", type=str, default="output", help="path of directory for output files (default is 'output')")
-    parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file(default is 'RELEASES')")
-    parser.add_argument("--split", type=str, default="station", help="If and how to split the output release files. 'station' to split according the station, else int n to split into n parts. (Number of releases should be devisable by n, default is 'station')")
+    parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file(default is 'RELEASES', ignored if config is dir)")
+    parser.add_argument("--stations_per_file", type=int, default=1, help="Number of column setups per RELEASES file. (default is 1)")
+    parser.add_argument("--mdpf", action="store_true", help="(Multiple Days Per File) Flag to allow different days in one RELEASES file")
     args = parser.parse_args()
-    
-    # check if only one ore multiple RELEASES files are created
-    if os.path.isdir(args.config):
-        dir_path = args.config
-        file_names = os.listdir(dir_path)
-    else:
-        dir_path, file_names = args.config.rsplit("/", 1)
-        file_names = [file_names]
+
+    config_dir, config_files = get_configs(args.config)
     
     # start of file construction
-    for file in file_names:
-        file_path = os.path.join(dir_path, file)
-        if len(file_names) > 1:
+    for file in config_files:
+        file_path = os.path.join(config_dir, file)
+        if len(config_files) > 1:
             # get output name without ".yaml"
             args.out_name = file.split(".")[0]
         
@@ -43,60 +146,40 @@ if __name__ == "__main__":
         # GET PARAMETERS 
         zkind = config["zkind"]
         mass = config["mass"]
-        # calcualte height_levels and particle numbers according to mode
         height_levels, part_nums = setup_column(config)
-        #get coordinates and times of releases either from config or read from file
         coords = setup_coords(config)
         times = setup_times(config)
 
         assert len(coords) == len(times), f'Coords and times have the same number of elements. Your input: len(coords)={len(coords)}, len(times)={len(times)}'
 
-        RELEASES = load_header(config["species"])
-
+        # list of strings to hold information for RELEASES file
+        releases = load_header(config["species"])
+        
         if config["discrete"]:
             height_levels = height_levels[1:]
-
-        release_counter = 0
-        save_counter = 0
-        release_number = len(coords)*len(part_nums)
-
-        # set on how to split releases
-        split = False
-        split_by = None
-        if args.split is not None:
-            if args.split == "station":
-                split = True
-                split_by = "station"
-            else:
-                split = True
-                split_by = int(args.split)
-                assert release_number % split_by == 0, f"If int is given for split argument it has to be denominator of number of releases ({release_number})"
         
+        station_counter = 0
+        save_counter = 0
         # SAVE PARAMETERS INTO RELEASES FILES
         for i, ((lon1, lon2, lat1, lat2), (date1, time1, date2, time2)) in enumerate(zip(coords, times)):
+            date = date1
+            station_counter += 1
             for j, parts in enumerate(part_nums):
                 comment = f'"coords:{(lon1, lon2, lat1, lat2)}, height:{height_levels[j]}, time:{(date1, time1, date2, time2)}"'
                 z1 = height_levels[j]
                 z2 = height_levels[j if config["discrete"] else j+1]
                 # insert paratmeters into RELEASES file 
-                RELEASES.extend(write_to_dummy(date1, time1, date2, time2, lon1, lon2,
-                    lat1, lat2, z1, z2, zkind, mass, parts, comment))
-                release_counter += 1
-                # split verison 1: by number of release
-                if split and isinstance(split_by, int) and release_number and release_counter%(release_number//split_by)==0:
-                    save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES, args.config)
-                    save_counter +=1
-                    RELEASES = load_header(config["species"])
-            # split verion 2: by station
-            if split and split_by == "station":
-                if len(coords) > 1:
-                    save_release(args.out_dir, f"{args.out_name}_{save_counter}", RELEASES)
-                else:
-                    save_release(args.out_dir, f"{args.out_name}", RELEASES)
-                save_counter +=1
-                RELEASES = load_header(config["species"])
+                releases.extend(write_to_dummy(date1, time1, date2, time2, lon1, lon2,
+                    lat1, lat2, z1, z2, zkind, mass, parts, comment))                
+
+            save_condition = get_save_condition(station_counter, args.stations_per_file, args.mdpf, date, times, i)
+            if save_condition:
+                save_name = get_save_name(coords, args.out_name, save_counter)
+                save_release(args.out_dir, save_name, releases)
+                save_counter += 1
+                station_counter = 0
+                releases = load_header(config["species"])
+
         print(f"Save destination: {os.path.join(args.out_dir, args.out_name)}(_#)")
         print(f"Number of stations: {len(coords)}")
         print(f"Total number of particles: {np.sum(part_nums)*len(coords)}")
-        # split version 3: no split
-        save_release(args.out_dir, args.out_name, RELEASES, file_path) if not split else None
