@@ -2,6 +2,7 @@
 
 import numpy as np
 import yaml
+import os
 
 def pressure_factor(
     h,
@@ -122,3 +123,9 @@ def datetime64_to_yyyymmdd_and_hhmmss(time: np.datetime64) -> tuple[str, str]:
     string = string.replace("-", "").replace(":", "")
     date, time = string.split("T")
     return date, time
+
+def in_dir(path: str, string: str) -> bool:
+    for file in os.listdir(path):
+        if string in file:
+            return True
+    return False
