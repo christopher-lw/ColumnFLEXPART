@@ -7,12 +7,16 @@ import argparse
 from datetime import datetime
 
 class SatillitePositions():
-    def __init__(self, xarr, start=None, stop=None):
-        self.xarr = xarr
+    def __init__(self, xarr, start=None, stop=None, quality_flag=0):
+        self.xarr = self.select_quality(xarr, quality_flag)
         self._start = self.format_times(start)
         self._stop = self.format_times(stop) + np.timedelta64(1, "D")
     
         self.dataframe = self.get_dataframe()
+
+    def select_quality(self, xarr: xr.Dataset, quality_flag: int) -> xr.Dataset:
+        xarr = xarr.isel(sounding_id = (xarr.xco2_quality_flag <= quality_flag))
+        return xarr
 
     def get_dataframe(self):
         try: 
