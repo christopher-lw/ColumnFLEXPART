@@ -7,6 +7,14 @@ import numpy as np
 from utils import setup_column, yyyymmdd_to_datetime64
 
 def get_configs(config_path: str) -> tuple[str, str]:
+    """Gets paths of config files
+
+    Args:
+        config_path (str): Path to config file of dir of config filesystem
+
+    Returns:
+        tuple[str, str]: directory and file names of configs
+    """    
     if os.path.isdir(config_path):
         dir_path = config_path
         file_names = os.listdir(dir_path)
@@ -71,6 +79,14 @@ def write_to_dummy(date1: str, time1: str, date2: str, time2: str, lon1: float, 
     return dummy
 
 def setup_times(config: dict) -> list[list[str]]:
+    """Returns times either read from config or file given in config
+
+    Args:
+        config (dict): Loaded config as dict
+
+    Returns:
+        list[list[str]]: List of sets of [start_date, start_time, end_date, end_time]
+    """    
     if not config["times_from_file"]:
         times = config["times"]
 
@@ -84,7 +100,14 @@ def setup_times(config: dict) -> list[list[str]]:
     return times
 
 def setup_coords(config: dict) -> list[list[str]]:
+    """Returns coordinates of release either read from config or file set in config.
 
+    Args:
+        config (dict): Loaded config as dictionary
+
+    Returns:
+        list[list[str]]: List of sets of [left right lower upper]
+    """    
     if not config["coords_from_file"]:
         coords = config["coords"]
 
@@ -98,7 +121,20 @@ def setup_coords(config: dict) -> list[list[str]]:
     return coords
 
 def get_save_condition(counter: int, max_counter: int, multiple_days_per_file: bool, date: str, times: str, loop_ind: int) -> bool:
-    """Return bool to state whether to save or not based on the current counter, the following date and the arguments given."""    
+    """Return bool to state whether to save or not based on the current counter, the following date and the arguments given.
+
+    Args:
+        counter (int): Counter of releases since last save
+        max_counter (int): Value of counter at which result releases should be saved
+        multiple_days_per_file (bool): Flag if multiple days per releases file should be allowed
+        date (str): date of current release
+        times (str): list of times 
+        loop_ind (int): current index in times to check if date of last value in times == date
+
+    Returns:
+        bool: Bool to state whether to save or not
+    """    
+    
     if len(times) - 1 == loop_ind:
         ret = True 
     else:
@@ -107,12 +143,30 @@ def get_save_condition(counter: int, max_counter: int, multiple_days_per_file: b
     return ret
 
 def get_save_name(coords: np.ndarray, name: str, index: int) -> str:
+    """Constructs save name based on input
+
+    Args:
+        coords (np.ndarray): To check if multiple files are in the output
+        name (str): Base name of input
+        index (int): index to add if multiple files are output
+
+    Returns:
+        str: Name for output directory
+    """    
     save_name = name
     if len(coords) > 1:
         save_name += f"_{index}"
     return save_name
 
 def save_release(dir_name: str, file_name: str, release_data: str, config: str=None):
+    """Saves releases data to RELEASES file with name file_name in directory dir_name
+
+    Args:
+        dir_name (str): Directory to save to 
+        file_name (str): File name of RELEASES file 
+        release_data (str): Data to save
+        config (str, optional): Path to config file if config should be saved together with RELEASES file. Defaults to None.
+    """    
     os.makedirs(dir_name, exist_ok=True)
     with open(os.path.join(dir_name, file_name), 'w') as f:
         for item in release_data:
