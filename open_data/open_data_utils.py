@@ -491,9 +491,11 @@ def get_fp_array(fp_dataset):
     return fd_array
 
 def combine_flux_and_footprint(flux, footprint, chunks=None):
-    fp_co2 = xr.merge([footprint, flux])
     if chunks is not None:
-        fp_co2 = fp.co2.chunk(chunks=chunks)
+        footprint = footprint.chunk(chunks=chunks)
+        flux = flux.chunk(chunks=chunks)
+    fp_co2 = xr.merge([footprint, flux])
+    fp_co2 = fp_co2.persist()
     # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
     fp_co2 = 1/100 * fp_co2.total_flux*fp_co2.spec001_mr*0.044 #dim : time, latitude, longitude, pointspec: 36
     #sum over time, latitude and longitude, remaining dim = layer
@@ -503,7 +505,7 @@ def combine_flux_and_footprint(flux, footprint, chunks=None):
     fp_co2 = fp_co2.to_dataset()
     return fp_co2
 
-def calc_enhancement(fp_data, ct_file, p_surf, startdate, enddate):
+def calc_enhancement(fp_data, ct_file, p_surf, startdate, enddate, boundary=None):
     print("using enh2")
 
     def barometric(a, b):
@@ -534,9 +536,7 @@ def calc_enhancement(fp_data, ct_file, p_surf, startdate, enddate):
 
 
 
-def calc_enhancement2(fp_data, ct_file, p_surf, startdate, enddate):
-    print("using enh2")
-
+def calc_enhancement2(fp_data, ct_file, p_surf, startdate, enddate, boundary=None):
     def barometric(a, b):
         func = lambda x, y: x*np.exp(-(y/7800)) #Skalenhöhe von 7.8 km passt?
         return xr.apply_ufunc(func, a, b)
@@ -551,10 +551,12 @@ def calc_enhancement2(fp_data, ct_file, p_surf, startdate, enddate):
     footprint = get_fp_array(fp_data)
     #selct times of Footprint in fluxes
     ct_flux = ct_flux.sel(time=slice(footprint.time.min(),footprint.time.max()))
+    if boundary is not None: ct_flux = select_extent(ct_flux, *boundary)
     
     #get pressure levels (boundaries of layer) of FP data, needed for interpolation on GOSAT levels
-    fp_pressure_layers = barometric(p_surf, np.append(np.array([0]), fp_data.RELZZ2[:].values))
-    pressure_weights = 1/(p_surf-0.1)*(fp_pressure_layers[0:-1]-fp_pressure_layers[1:]) 
+    fp_pressure_layers = barometric(p_surf, np.mean([fp_data.RELZZ1[:].values, fp_data.RELZZ2[:].values], axis=0))
+    pressure_weights = fp_pressure_layers/fp_pressure_layers.sum() 
+    # OLDVERSION pressure_weights = 1/(p_surf-0.1)*(fp_pressure_layers[0:-1]-fp_pressure_layers[1:]) 
     #FP_pressure_layers = np.array(range(numLayer,0,-1))*1000/numLayer
     fp_co2 = combine_flux_and_footprint(ct_flux, footprint, chunks=dict(time=20))
     
@@ -607,7 +609,8 @@ class FlexDataset2():
         with open(os.path.join(self._dir, 'header_txt'), 'r') as f:
             lines = f.readlines()
         ibdate, ibtime, iedate, ietime = lines[1].strip().split()[:4]
-
+        ibtime = ibtime.zfill(6)
+        ietime = ietime.zfill(6)
         start = datetime.strptime(iedate+ietime, "%Y%m%d%H%M%S")
         stop = datetime.strptime(ibdate+ibtime, "%Y%m%d%H%M%S")
         with open(os.path.join(self._dir, 'RELEASES.namelist'), 'r') as f:
@@ -866,6 +869,42 @@ class FlexDataset2():
             factor = np.exp(-g * M * (h - hb)/(R * Tb))
             return factor
 
+        def plot(self, ax=None, id=None, add_map=True, add_endpoints=False, endpoint_kwargs=dict(color="black", s=100), plot_station=True, station_kwargs=dict(color="black"), **kwargs):
+            return_fig = False
+            fig = None
+            if ax is None:
+                fig, ax = self._outer.subplots()
+                return_fig = True
+            if id is None:
+                id = np.random.randint(0, self.dataframe.id.max())
+            if isinstance(id, int) or isinstance(id, float):
+                id = [id]
+
+            plot_kwargs = dict(color="grey")
+            plot_kwargs.update(kwargs)
+
+            for i in id:
+                data = self.dataframe[self.dataframe["id"].values == i]
+                lon = data.longitude
+                lat = data.latitude
+                ax.plot(lon, lat, **plot_kwargs)
+                if add_endpoints: 
+                    end = self.endpoints[self.endpoints["id"].values == i]
+                    ax.scatter(end.longitude, end.latitude, **endpoint_kwargs)
+
+            if plot_station:
+                ax.scatter(self._outer.release['lon1'], self._outer.release['lat1'], **station_kwargs)
+            if add_map:
+                xlim = ax.get_xlim()
+                ylim = ax.get_ylim()
+                self._outer.add_map(ax)
+                ax.set_xlim(xlim)
+                ax.set_ylim(ylim)
+            if return_fig:
+                return fig, ax
+            else:
+                return ax
+
     def add_map(self, ax, feature_list = [cf.COASTLINE, cf.BORDERS, [cf.STATES, dict(alpha=0.1)]],
                 **grid_kwargs,
                ):
@@ -933,12 +972,14 @@ class FlexDataset2():
                 enh_func = calc_enhancement2 if new_enh else calc_enhancement
                 if boundary is not None:
                     footprint = select_extent(footprint, *boundary)
-                self._enhancement = enh_func(footprint, ct_file, p_surf, self.stop.date(), self.start.date())
+                self._enhancement = enh_func(footprint, ct_file, p_surf, self.stop.date(), self.start.date(), boundary=boundary)
                 self.save_result("enhancement", self._enhancement, boundary)
         
         return self._enhancement
 
     def load_result(self, name, boundary=None):
+        if not boundary is None:
+            boundary = [float(b) for b in boundary]
         file = os.path.join(self._dir, f"{name}.json")
         with open(file) as f:
             data = json.load(f)
@@ -946,6 +987,8 @@ class FlexDataset2():
         return result
 
     def save_result(self, name, result, boundary=None):
+        if not boundary is None:
+            boundary = [float(b) for b in boundary]
         file = os.path.join(self._dir, f"{name}.json")
         data = {}
         if os.path.exists(file):
@@ -955,7 +998,7 @@ class FlexDataset2():
         with open(file, "w") as f:
             json.dump(data, f)
 
-    def background(self, allow_read=True, boundary=None):
+    def background(self, allow_read=True, boundary=None, pressure_weight=True):
         """Returns background calculation in ppm based on trajectories in trajectories.pkl file. Is either loaded from file, calculated or read from class. 
 
         Args:
@@ -971,8 +1014,15 @@ class FlexDataset2():
             
             except (FileNotFoundError, KeyError, AssertionError):
                 assert boundary == self._last_boundary, f"No endpoints calculated for current boundary. Your input: {boundary}, boundary of endpoints {self._last_boundary}"
-                self._background = np.sum(self.trajectories.endpoints.co2 * self.trajectories.endpoints.pressure_weight)[0]
+                if pressure_weight:
+                    self._background = np.sum(self.trajectories.endpoints.co2 * self.trajectories.endpoints.pressure_weight)[0]
+                else:
+                    self._background = np.mean(self.trajectories.endpoints.co2)[0]
                 self.save_result("background", self._background, boundary)
         return self._background
 
-    
+def in_dir(path: str, string: str) -> bool:
+    for file in os.listdir(path):
+        if string in file:
+            return True
+    return False
