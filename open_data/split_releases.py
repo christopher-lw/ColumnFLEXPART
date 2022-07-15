@@ -7,6 +7,8 @@ import pandas as pd
 from datetime import datetime as dt
 from open_data_utils import in_dir
 from tqdm.auto import tqdm
+from multiprocessing import Pool
+from functools import partial
 
 def get_output_dirs(path: str, r: bool, dirs: list[str] = []) -> list[str]:
     """Collects all dir with flexpart output. Optionally searches recursively beneath path
@@ -52,7 +54,15 @@ def check_names(dirs: list[str]) -> str:
     return name_scheme
     
 
-def group_releases(dir: str) -> tuple[str, list[list[str]], np.ndarray, np.ndarray, list[int]]:  
+def group_releases(dir: str) -> tuple[str, list[list[str]], np.ndarray, np.ndarray, list[list[int]]]:  
+    """Goes through the RELEASES.namelist file in dir and groups all the releases of one stations
+
+    Args:
+        dir (str): Flexpart output directory
+
+    Returns:
+        tuple[str, list[list[str]], np.ndarray, np.ndarray, list[list[int]]]: header of releases file, list with dims: (num_stations, num_release_per_station), longitude values of stations, latitude values of stations, partposit values for each station
+    """    
     with open(os.path.join(dir, "RELEASES.namelist"), "r") as f:
         releases_file = f.read().split("&")[1:]    
 
@@ -93,6 +103,14 @@ def group_releases(dir: str) -> tuple[str, list[list[str]], np.ndarray, np.ndarr
     return header, release_collections, lon_list, lat_list, index_collections
 
 def convert_partpoisit(dir: str) -> tuple[list[xr.Dataset], list[str]]:
+    """Converts partpoist files into xarray.Datasets. Returns Data and respective origin binary filename
+
+    Args:
+        dir (str): Flexpart output directory
+
+    Returns:
+        tuple[list[xr.Dataset], list[str]]: Data, origin binary file names
+    """    
     data = []
     files = []
     for file in os.listdir(dir):
@@ -103,6 +121,17 @@ def convert_partpoisit(dir: str) -> tuple[list[xr.Dataset], list[str]]:
         
 
 def get_name(dir: str, file_counter: int, i: int, name_scheme: str) -> str:
+    """Constructs name of output directory depending on name scheme
+
+    Args:
+        dir (str): parent directory
+        file_counter (int): Index countig total produced output directories
+        i (int): Index counting produced dierctoies for current Flexpart output file
+        name_scheme (str): States scheme to use for naming.
+
+    Returns:
+        str: Name for output directory
+    """    
     if dir[-1] == "/": dir = dir[:-1]
     if name_scheme == "by_dir":
         name = f"{os.path.basename(dir)}_{i}"
@@ -111,6 +140,13 @@ def get_name(dir: str, file_counter: int, i: int, name_scheme: str) -> str:
     return name
 
 def save_release(header: str, release_collection: list[str], save_dir: str):
+    """Saves releases data into RELEASES.namelist file
+
+    Args:
+        header (str): header of RELEASES file
+        release_collection (list[str]): list of single releases to save to file 
+        save_dir (str): directory to save RELEASES.namelist to
+    """    
     content = f"&{header}"
     for release in release_collection:
         content += f"&{release}"
@@ -118,6 +154,12 @@ def save_release(header: str, release_collection: list[str], save_dir: str):
         f.write(content)
 
 def copy_namelists(dir: str, save_dir: str):
+    """Copies all useful textfiles of Flexpart output to the given directory
+
+    Args:
+        dir (str): Source
+        save_dir (str): Destination
+    """    
     for file in os.listdir(dir):
         if "namelist" in file and not "RELEASES" in file:
             shutil.copy(os.path.join(dir, file), os.path.join(save_dir, file))
@@ -125,6 +167,14 @@ def copy_namelists(dir: str, save_dir: str):
             shutil.copy(os.path.join(dir, file), os.path.join(save_dir, file))
 
 def get_footprint(dir: str) -> tuple[xr.Dataset, str]:
+    """Finds and loads footprint file in Flexpart ouput directory
+
+    Args:
+        dir (str): Flexpart ouput directory
+
+    Returns:
+        tuple[xr.Dataset, str]: Loaded footprint, name of the file
+    """    
     for file in os.listdir(dir):
         if "grid" in file:
             footprint_file = file 
@@ -133,12 +183,14 @@ def get_footprint(dir: str) -> tuple[xr.Dataset, str]:
     return footprint, footprint_file
 
 def partposit_from_bin(filename: str, nspec: int=1) -> xr.Dataset:
-    """Converts binary partposit output file of FLEXPART to nc file. Optionally removes binary file.
+    """Converts binary partposit output file of FLEXPART to xr.Dataset.
 
     Args:
         filename (str): file to convert
-        nspec (int, optional): number of species. Defaults to 1.
-        remove_bin (bool, optional): Wether bin file should be removed. Defaults to False.
+        nspec (int, optional): Number of species. Defaults to 1.
+
+    Returns:
+        xr.Dataset: Converted binary file (dropped unuseful information)
     """    
     xmass_dtype = [('xmass_%d' % (i + 1), 'f4') for i in range(nspec)]
     # note age is calculated from itramem by adding itimein
@@ -173,6 +225,14 @@ def partposit_from_bin(filename: str, nspec: int=1) -> xr.Dataset:
     return xarr
 
 def fix_pointspec(xarr: xr.Dataset) -> xr.Dataset:
+    """Adjusts pointspec to start from 0
+
+    Args:
+        xarr (xr.Dataset): parposit data
+
+    Returns:
+        xr.Dataset: fixed partposit data
+    """    
     pointspec = xarr.pointspec.values
     pointspec = pointspec - min(pointspec) + 1
     xarr = xarr.drop("pointspec")
@@ -180,12 +240,25 @@ def fix_pointspec(xarr: xr.Dataset) -> xr.Dataset:
     return xarr
 
 def fix_ids(xarr: xr.Dataset) -> xr.Dataset:
+    """Adjusts id of particles to start from 0
+
+    Args:
+        xarr (xr.Dataset): partposit data
+
+    Returns:
+        xr.Dataset: fixed partposit data
+    """    
     ids = xarr.id.values
     ids = ids - ids.min()
     xarr = xarr.assign_coords(dict(id = ids))
     return xarr
 
 def combine_to_trajectories(dir: str):
+    """Collects all partposit NetCDF files and Saves them to one trajectories.pkl file
+
+    Args:
+        dir (str): Directory with partposit files to collect
+    """    
     partposit_files = []
     for file in os.listdir(dir):
         if "partposit" in file and ".nc" in file:
@@ -196,50 +269,64 @@ def combine_to_trajectories(dir: str):
     pd_trajectories = pd_trajectories.set_index(["time", "id", "pointspec"])
     pd_trajectories.to_pickle(os.path.join(dir, "trajectories.pkl"))
 
+def main(enumerated_dir, name_scheme, args, disable_tqdms):
+    (i, dir) = enumerated_dir 
+    # Filter RELEASES.namelist and copy other namelists
+    header, release_collections, lon_list, lat_list, index_collections = group_releases(dir)
+    footprint, footprint_file = get_footprint(dir)
+    partposit_data, partposit_files = convert_partpoisit(dir)
+    for j, release_collection in enumerate(tqdm(release_collections, desc = "Releases of directory", position=1, leave=False, disable=disable_tqdms)):
+        # preparation
+        file_counter = i*len(release_collections) + j
+        name = get_name(dir, file_counter, j, name_scheme)
+        save_dir = os.path.join(args.outdir, name)
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # namelists and header
+        save_release(header, release_collection, save_dir)
+        copy_namelists(dir, save_dir)
+        
+        # footprint data
+        release_indices = index_collections[j]
+    
+        release_footprint = footprint[dict(numpoint = release_indices, pointspec = release_indices)]
+        release_footprint.to_netcdf(os.path.join(save_dir, footprint_file))
+        # partposit data
+        for partposit_single, file in tqdm(zip(partposit_data, partposit_files), desc = "Partposit files", total=len(partposit_files), position=2, leave=False, disable=disable_tqdms):
+            # if the particles of this release are not inititialized yet continue
+            # pointspec is the index of the release and characterizes its sounding and height (in the partposit files it starts with 1)
+            if partposit_single.pointspec.isin(release_indices+1).sum() == 0: continue
+            partposit_release = partposit_single.where(partposit_single.pointspec.isin(release_indices + 1), drop=True)
+            partposit_release = fix_pointspec(partposit_release)
+            partposit_release = fix_ids(partposit_release)
+            partposit_release.to_netcdf(os.path.join(save_dir, f"{file}.nc"))
+        combine_to_trajectories(save_dir)
+
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Script to spilt Flexpart output of one run with multiple stations.")
     parser.add_argument("dir", type=str, help="Flexpart output directory to split")
     parser.add_argument("outdir", type=str, help="Directory for split up data")
+    parser.add_argument("--processes", type=int, default=1, help="Number of processes")
     parser.add_argument("-r", action="store_true", help="Flag to recursively search for flexpart output directories to split. All results will be saved to outdir")
     
     args = parser.parse_args()
+    disable_main_tqdms = args.processes > 1
 
     dirs = get_output_dirs(args.dir, args.r)
     name_scheme = check_names(dirs)
     os.makedirs(args.outdir, exist_ok=True)
 
-    file_counter = 0
-    for dir in tqdm(dirs):
-        file_counter_state = file_counter
-        # Filter RELEASES.namelist and copy other namelists
-        header, release_collections, lon_list, lat_list, index_collections = group_releases(dir)
-        footprint, footprint_file = get_footprint(dir)
-        partposit_data, partposit_files = convert_partpoisit(dir)
-        for i, release_collection in enumerate(release_collections):
-            # preparation
-            name = get_name(dir, file_counter, i, name_scheme)
-            save_dir = os.path.join(args.outdir, name)
-            os.makedirs(save_dir, exist_ok=True)
-            
-            # namelists and header
-            save_release(header, release_collection, save_dir)
-            copy_namelists(dir, save_dir)
-            
-            # footprint data
-            release_indices = index_collections[i]
-        
-            release_footprint = footprint[dict(numpoint = release_indices, pointspec = release_indices)]
-            release_footprint.to_netcdf(os.path.join(save_dir, footprint_file))
-            # partposit data
-            for partposit_single, file in zip(partposit_data, partposit_files):
-                partposit_release = partposit_single.where(partposit_single.pointspec.isin(release_indices + 1), drop=True)
-                partposit_release = fix_pointspec(partposit_release)
-                partposit_release = fix_ids(partposit_release)
-                partposit_release.to_netcdf(os.path.join(save_dir, f"{file}.nc"))
-            combine_to_trajectories(save_dir)
-            
-            file_counter += 1
+    # in case of no multi core processing use for loop
+    if args.processes == 1:
+        print("No multiprocessing")
+        for enumerated_dir in enumerate(tqdm(dirs, desc = "Directories to split", position = 0)):
+            main(enumerated_dir, name_scheme, args, disable_main_tqdms)
 
-
-   
+    # in case of multi core processing
+    else:
+        print("Using multiprocessing")
+        partial_main = partial(main, name_scheme=name_scheme, args=args, disable_tqdms=disable_main_tqdms)
+        enumerated_dirs = enumerate(dirs)
+        with Pool(processes=args.processes)as p:
+            _ = list(tqdm(p.imap(partial_main, enumerated_dirs), total=len(dirs)))
