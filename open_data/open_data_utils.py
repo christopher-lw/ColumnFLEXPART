@@ -568,13 +568,14 @@ def calc_enhancement2(fp_data, ct_file, p_surf, startdate, enddate, boundary=Non
 def load_nc_partposit(dir_path, chunks=None):
     files = []
     for file in os.listdir(dir_path):
-        if "partposit" in file and ".nc" in file:
+        if "partposit" in str(file) and ".nc" in str(file):
             files.append(os.path.join(dir_path, file))
     xarr = xr.open_mfdataset(files, chunks=chunks)
     return xarr
 
 class FlexDataset2():
-    def __init__(self, nc_path, **kwargs):
+    def __init__(self, directory, **kwargs):
+        nc_path = self.get_nc_path(directory)
         self._nc_path = nc_path
         self._dir = nc_path.rsplit("/", 1)[0]
         self._kwargs = dict(
@@ -603,6 +604,17 @@ class FlexDataset2():
         self._background = None
         self._enhancement = None
         self._last_boundary = None
+
+    def get_nc_path(self, directory: str) -> str:
+        nc_file = None
+        for filename in os.listdir(directory):
+            if "grid_time" in filename and ".nc" in filename:
+                nc_file = filename
+                break
+        if nc_file is None:
+            raise FileNotFoundError(f"No NetCDF file with 'grid_time' in given directory: {directory}")
+        return os.path.join(directory, nc_file)
+        
 
     def get_metadata(self):
         #read things from the header and RELEASES.namelist
@@ -754,7 +766,7 @@ class FlexDataset2():
                 df_total = self.dataframe.loc[self.dataframe.groupby(self._id_key)["time"].idxmin()]
 
             _ = self.load_ct_data(ct_dir, ct_dummy)
-
+            # finding cells of endpoints for time longitude and latitude
             variables = ["time", "longitude", "latitude"]
             for i, var in enumerate(variables):
                 ct_vals = self.ct_data[var].values
@@ -763,8 +775,17 @@ class FlexDataset2():
                 inds = np.argmin(diff, axis=-1)
                 df_total.insert(loc=1, column=f"ct_{var}", value=inds)
             df_total.insert(loc=1, column="pressure_height", value=10130 * self.pressure_factor(df_total.height))
-            df_total.insert(loc=1, column = "ct_height", value=df_total.apply(lambda x: np.where(np.sort(np.append(np.array(self.ct_data.pressure[x.ct_time,:,x.ct_latitude,x.ct_longitude]), x.pressure_height))[::-1] == x.pressure_height)[0] - 1, axis=1))
-            
+            # finding cells of endpoints for height
+            ct_vals = self.ct_data.pressure.isel(
+                time=xr.DataArray(df_total.ct_time.values), 
+                latitude=xr.DataArray(df_total.ct_latitude.values), 
+                longitude=xr.DataArray(df_total.ct_longitude.values))
+            df_vals = df_total.pressure_height.values
+            diff = np.abs(df_vals[:,None] - ct_vals)
+            inds = np.argsort(diff, axis=-1)[:, :2]
+            inds = abs(inds).min(axis=1)
+            df_total.insert(1, "ct_height", value=inds)
+            # sorting and filtering         
             self.endpoints = df_total.sort_values(self._id_key)
             self.endpoints = self.endpoints[np.sign(self.endpoints.pointspec) == 1]
             self.endpoints.attrs["boundary"] = boundary
@@ -807,7 +828,7 @@ class FlexDataset2():
             self.endpoints = pd.read_pickle(read_path).sort_values(self._id_key)
             self._outer._last_boundary = self.endpoints.attrs["boundary"]
 
-        def co2_from_endpoints(self, exists_ok=True, boundary=None, ct_dir=None, ct_dummy=None, pressure_weight=True):
+        def co2_from_endpoints(self, exists_ok=True, boundary=None, ct_dir=None, ct_dummy=None):
             """Returns CO2 at positions of the endpoints of the particles. Result is also saved to endpoints. Pressure weights are also calculated based on the pointspec value of the particles.
 
             Args:
@@ -815,7 +836,6 @@ class FlexDataset2():
                 boundary (list, optional): Boundaries for optional endpoint calculateion if no endpoints exist so far. Defaults to None.
                 ct_dir (str, optional): Directory for carbon tracker data. Defaults to None.
                 ct_dummy (str, optional): Start of each Carbon Tracker file util the time stamp. Defaults to None.
-                pressure_weight (bool, optional): Flag to also add pressure weights in the enpoints dataframe. Defaults to True.
 
             Returns:
                 _type_: _description_
@@ -831,16 +851,19 @@ class FlexDataset2():
                 print("'co2' is allready in endpoints. To calculate again set exists_ok=Flase") or "n"
                 if not exists_ok:
                     self.endpoints.drop("co2")
-                    self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values, axis=1))
+                    co2_values = self.ct_data.co2.isel(
+                        time=xr.DataArray(self.enpoints.ct_time.values), 
+                        latitude=xr.DataArray(self.enpoints.ct_latitude.values), 
+                        longitude=xr.DataArray(self.enpoints.ct_longitude.values),
+                        level=xr.DataArray(self.enpoints.ct_height.values))
+                    self.endpoints.insert(loc=1, column = "co2", value=co2_values)
             else:
-                self.endpoints.insert(loc=1, column = "co2", value=self.endpoints.apply(lambda x: self.ct_data.co2[x.ct_time, x.ct_height, x.ct_latitude, x.ct_longitude].values, axis=1))
-            
-            if pressure_weight:
-                pointspec = self.endpoints.pointspec.values.astype(int)
-                heights = self._outer.release["heights"][pointspec-1]
-                pressures = self.pressure_factor(heights)
-                pressures = pressures/pressures.sum()
-                self.endpoints.insert(loc=1, column="pressure_weight", value=pressures)
+                co2_values = self.ct_data.co2.isel(
+                        time=xr.DataArray(self.enpoints.ct_time.values), 
+                        latitude=xr.DataArray(self.enpoints.ct_latitude.values), 
+                        longitude=xr.DataArray(self.enpoints.ct_longitude.values),
+                        level=xr.DataArray(self.enpoints.ct_height.values))
+                self.endpoints.insert(loc=1, column = "co2", value=co2_values)           
 
             return self.endpoints.co2.values
             
@@ -994,11 +1017,12 @@ class FlexDataset2():
         if os.path.exists(file):
             with open(file) as f:
                 data = json.load(f)
-        data[str(boundary)] = float(result)
+            data[str(boundary)] = float(result)
         with open(file, "w") as f:
             json.dump(data, f)
 
-    def background(self, allow_read=True, boundary=None, pressure_weight=True):
+    def background(self, allow_read=True, boundary=None, save_result=True):
+        
         """Returns background calculation in ppm based on trajectories in trajectories.pkl file. Is either loaded from file, calculated or read from class. 
 
         Args:
@@ -1013,12 +1037,13 @@ class FlexDataset2():
                 self._background = self.load_result("background", boundary)
             
             except (FileNotFoundError, KeyError, AssertionError):
-                assert boundary == self._last_boundary, f"No endpoints calculated for current boundary. Your input: {boundary}, boundary of endpoints {self._last_boundary}"
-                if pressure_weight:
-                    self._background = np.sum(self.trajectories.endpoints.co2 * self.trajectories.endpoints.pressure_weight)[0]
-                else:
-                    self._background = np.mean(self.trajectories.endpoints.co2)[0]
-                self.save_result("background", self._background, boundary)
+                assert boundary == self._last_boundary, f"No endpoints calculated for given boundary. Your input: boundary = {boundary}, boundary of current endpoints: {self._last_boundary}."
+                co2_means = self.trajectories.endpoints[["co2", "pointspec"]].groupby("pointspec").mean().values.flatten()
+                factors = self.trajectories.pressure_factor(self.release["heights"])
+                factors = factors/factors.sum() 
+                self._background = np.sum(co2_means * factors)
+                if save_result:
+                    self.save_result("background", self._background, boundary)
         return self._background
 
 def in_dir(path: str, string: str) -> bool:
