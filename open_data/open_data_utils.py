@@ -482,7 +482,34 @@ def load_ct_data(ct_file, startdate, enddate):
     ct_flux = ct_flux[:,:,1:]
     return ct_flux
 
+def load_ct_data_no_dask(ct_file, startdate, enddate):
+    first = True
+    for date in pd.date_range(startdate, enddate):
+        ct_single_file = ct_file+str(date.year)+str(date.month).zfill(2)+str(date.day).zfill(2)+'.nc'
+        ct_flux_day = xr.open_mfdataset(ct_single_file, combine='by_coords',drop_variables = 'time_components', chunks="auto")
+        if first:
+            first = False
+            ct_flux = ct_flux_day
+        else:
+            ct_flux = xr.concat([ct_flux, ct_flux_day],dim = 'time').compute()
+    #sum flux components: 
+    ct_flux = ct_flux.bio_flux_opt+ct_flux.ocn_flux_opt+ct_flux.fossil_flux_imp+ct_flux.fire_flux_imp
+    ct_flux.name = 'total_flux'
+
+    #can be deleted when footprint has -179.5 coordinate
+    ct_flux = ct_flux[:,:,1:]
+    return ct_flux
+
 def get_fp_array(fp_dataset):
+    fd_array = fp_dataset.spec001_mr[0,:,:,0,:,:]
+    dt = np.timedelta64(90,'m')
+    fd_array = fd_array.assign_coords(time=(fd_array.time + dt))
+    #flip time axis
+    fd_array = fd_array.sortby('time')
+    return fd_array
+
+def get_fp_array_no_dask(fp_dataset):
+    fp_dataset = fp_dataset.compute()   
     fd_array = fp_dataset.spec001_mr[0,:,:,0,:,:]
     dt = np.timedelta64(90,'m')
     fd_array = fd_array.assign_coords(time=(fd_array.time + dt))
@@ -496,6 +523,17 @@ def combine_flux_and_footprint(flux, footprint, chunks=None):
         flux = flux.chunk(chunks=chunks)
     fp_co2 = xr.merge([footprint, flux])
     fp_co2 = fp_co2.persist()
+    # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
+    fp_co2 = 1/100 * fp_co2.total_flux*fp_co2.spec001_mr*0.044 #dim : time, latitude, longitude, pointspec: 36
+    #sum over time, latitude and longitude, remaining dim = layer
+    fp_co2 = fp_co2.sum(dim=['time','latitude','longitude'])
+    fp_co2 = fp_co2.compute()
+    fp_co2.name = 'CO2'
+    fp_co2 = fp_co2.to_dataset()
+    return fp_co2
+
+def combine_flux_and_footprint_no_dask(flux, footprint):
+    fp_co2 = xr.merge([footprint, flux])
     # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
     fp_co2 = 1/100 * fp_co2.total_flux*fp_co2.spec001_mr*0.044 #dim : time, latitude, longitude, pointspec: 36
     #sum over time, latitude and longitude, remaining dim = layer
@@ -548,7 +586,7 @@ def calc_enhancement2(fp_data, ct_file, p_surf, startdate, enddate, boundary=Non
     ct_flux = load_ct_data(ct_file, startdate, enddate).compute()
     
     #from .interp can be deleted as soon as FP dim fits CTFlux dim, layers repeated???? therfore only first 36
-    footprint = get_fp_array(fp_data)
+    footprint = get_fp_array(fp_data).compute()
     #selct times of Footprint in fluxes
     ct_flux = ct_flux.sel(time=slice(footprint.time.min(),footprint.time.max()))
     if boundary is not None: ct_flux = select_extent(ct_flux, *boundary)
@@ -559,6 +597,36 @@ def calc_enhancement2(fp_data, ct_file, p_surf, startdate, enddate, boundary=Non
     # OLDVERSION pressure_weights = 1/(p_surf-0.1)*(fp_pressure_layers[0:-1]-fp_pressure_layers[1:]) 
     #FP_pressure_layers = np.array(range(numLayer,0,-1))*1000/numLayer
     fp_co2 = combine_flux_and_footprint(ct_flux, footprint, chunks=dict(time=20))
+    
+    molefractions = fp_co2.CO2.values
+    enhancement = (pressure_weights*molefractions).sum()
+    enhancement = enhancement*1e6
+    return enhancement
+
+def calc_enhancement3(fp_data, ct_file, p_surf, startdate, enddate, boundary=None):
+    fp_data = fp_data.compute()
+    def barometric(a, b):
+        func = lambda x, y: x*np.exp(-(y/7800)) #Skalenhöhe von 7.8 km passt?
+        return xr.apply_ufunc(func, a, b)
+
+    #test the right order of dates
+    assert enddate > startdate, 'The startdate has to be before the enddate'
+
+    #read CT fluxes (dayfiles) and merge into one file
+    ct_flux =   (ct_file, startdate, enddate).compute()
+    
+    #from .interp can be deleted as soon as FP dim fits CTFlux dim, layers repeated???? therfore only first 36
+    footprint = get_fp_array_no_dask(fp_data.compute()).compute()
+    #selct times of Footprint in fluxes
+    ct_flux = ct_flux.sel(time=slice(footprint.time.min(),footprint.time.max()))
+    if boundary is not None: ct_flux = select_extent(ct_flux, *boundary)
+    
+    #get pressure levels (boundaries of layer) of FP data, needed for interpolation on GOSAT levels
+    fp_pressure_layers = barometric(p_surf, np.mean([fp_data.RELZZ1[:].values, fp_data.RELZZ2[:].values], axis=0))
+    pressure_weights = fp_pressure_layers/fp_pressure_layers.sum() 
+    # OLDVERSION pressure_weights = 1/(p_surf-0.1)*(fp_pressure_layers[0:-1]-fp_pressure_layers[1:]) 
+    #FP_pressure_layers = np.array(range(numLayer,0,-1))*1000/numLayer
+    fp_co2 = combine_flux_and_footprint_no_dask(ct_flux, footprint)
     
     molefractions = fp_co2.CO2.values
     enhancement = (pressure_weights*molefractions).sum()
@@ -774,7 +842,7 @@ class FlexDataset2():
                 diff = np.abs(df_vals[:,None] - ct_vals[None, :])
                 inds = np.argmin(diff, axis=-1)
                 df_total.insert(loc=1, column=f"ct_{var}", value=inds)
-            df_total.insert(loc=1, column="pressure_height", value=10130 * self.pressure_factor(df_total.height))
+            df_total.insert(loc=1, column="pressure_height", value=101300 * self.pressure_factor(df_total.height))
             # finding cells of endpoints for height
             ct_vals = self.ct_data.pressure.isel(
                 time=xr.DataArray(df_total.ct_time.values), 
@@ -789,6 +857,9 @@ class FlexDataset2():
             self.endpoints = df_total.sort_values(self._id_key)
             self.endpoints = self.endpoints[np.sign(self.endpoints.pointspec) == 1]
             self.endpoints.attrs["boundary"] = boundary
+            self.endpoints.attrs["height unit"] = "m"
+            self.endpoints.attrs["pressure unit"] = "Pa"
+            self.endpoints.attrs["co2 unit"] = "ppm"
             self._outer._last_boundary = boundary
             return self.endpoints
 
@@ -852,17 +923,17 @@ class FlexDataset2():
                 if not exists_ok:
                     self.endpoints.drop("co2")
                     co2_values = self.ct_data.co2.isel(
-                        time=xr.DataArray(self.enpoints.ct_time.values), 
-                        latitude=xr.DataArray(self.enpoints.ct_latitude.values), 
-                        longitude=xr.DataArray(self.enpoints.ct_longitude.values),
-                        level=xr.DataArray(self.enpoints.ct_height.values))
+                        time=xr.DataArray(self.endpoints.ct_time.values), 
+                        latitude=xr.DataArray(self.endpoints.ct_latitude.values), 
+                        longitude=xr.DataArray(self.endpoints.ct_longitude.values),
+                        level=xr.DataArray(self.endpoints.ct_height.values))
                     self.endpoints.insert(loc=1, column = "co2", value=co2_values)
             else:
                 co2_values = self.ct_data.co2.isel(
-                        time=xr.DataArray(self.enpoints.ct_time.values), 
-                        latitude=xr.DataArray(self.enpoints.ct_latitude.values), 
-                        longitude=xr.DataArray(self.enpoints.ct_longitude.values),
-                        level=xr.DataArray(self.enpoints.ct_height.values))
+                        time=xr.DataArray(self.endpoints.ct_time.values), 
+                        latitude=xr.DataArray(self.endpoints.ct_latitude.values), 
+                        longitude=xr.DataArray(self.endpoints.ct_longitude.values),
+                        level=xr.DataArray(self.endpoints.ct_height.values))
                 self.endpoints.insert(loc=1, column = "co2", value=co2_values)           
 
             return self.endpoints.co2.values
@@ -975,7 +1046,7 @@ class FlexDataset2():
         fig, ax = plt.subplots(*args, **kwargs)
         return fig, ax
     
-    def enhancement(self, ct_file=None, boundary=None, p_surf=1013, allow_read=True, force_calculation=False, new_enh=True):
+    def enhancement(self, ct_file=None, boundary=None, p_surf=1013, allow_read=True, force_calculation=False, enh_ind=1):
         """Returns enhancement based on Carbon Tracker emmission data and the footprint. Is either calculated, loaded, or read from class.
 
         Args:
@@ -991,8 +1062,11 @@ class FlexDataset2():
                 assert allow_read and not force_calculation
                 self._enhancement = self.load_result("enhancement", boundary)
             except (FileNotFoundError, KeyError, AssertionError): 
-                footprint = self.footprint.dataset.compute() if new_enh else self.footprint.dataset
-                enh_func = calc_enhancement2 if new_enh else calc_enhancement
+                footprint = self.footprint.dataset.compute() if enh_ind in [1,2] else self.footprint.dataset
+                if enh_ind == 0: enh_func = calc_enhancement
+                elif enh_ind == 1: enh_func = calc_enhancement2
+                elif enh_ind == 2: enh_func = calc_enhancement3
+                enh_func = calc_enhancement2 if enh_ind==1 else calc_enhancement
                 if boundary is not None:
                     footprint = select_extent(footprint, *boundary)
                 self._enhancement = enh_func(footprint, ct_file, p_surf, self.stop.date(), self.start.date(), boundary=boundary)
