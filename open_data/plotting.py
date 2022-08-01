@@ -16,11 +16,16 @@ settings = dict()
 
 path = "/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl"
 
-class sensitivity():
-    def __init__(self, predictions_file: str):
+class Sensitivity():
+    def __init__(self, predictions_file: str, mode=0):
         self.predictions_file = predictions_file
         self.predictions = pd.read_pickle(predictions_file)
-        self.data = self._get_prediction_data() 
+        if mode == 0:
+            self.data = self._get_prediction_data() 
+        elif mode == 1:
+            self.data = self._get_prediction_data_legacy()
+        elif mode == 2:
+            self.data = self._get_prediction_data_legacy2()
 
     def _get_prediction_data(self):
         data_variables = ["enhancement", "background", "xco2"]
@@ -36,6 +41,64 @@ class sensitivity():
             part = int(pred.directory.rsplit("k",1)[0][-3:])
             city = 'wollongong' if pred.directory[-1] == "0" else 'darwin' 
             typ = 'unit' if 'unit' in pred.directory else 'pressure'
+            for variable in data_variables:
+                value = pred[variable]
+                data[variable][city][typ].append(value)
+            data["particles"][city][typ].append(part)
+            data["directories"][city][typ].append(pred.directory)
+
+        for city in ["darwin", "wollongong"]:         
+            for typ in ["unit", "pressure"]:
+                ids = np.argsort(data["particles"][city][typ])
+                data["particles"][city][typ] = np.array(data["particles"][city][typ])[ids]
+                data["directories"][city][typ] = np.array(data["directories"][city][typ])[ids]
+                for variable in data_variables:
+                    data[variable][city][typ] = np.array(data[variable][city][typ])[ids]
+        return data
+    
+    def _get_prediction_data_legacy(self):
+        data_variables = ["enhancement"]
+        data = dict()
+        data_setup = dict(darwin = dict(unit = [], pressure = []), wollongong = dict(unit = [], pressure = []))
+        data["particles"] = deepcopy(data_setup)
+        data["directories"] = deepcopy(data_setup)
+        for variable in data_variables:
+            data[variable] = deepcopy(data_setup)
+        
+        for i in range(len(self.predictions)):
+            pred = self.predictions.iloc[i]
+            part = int(pred.directory.rsplit("k",1)[0][-3:])
+            city = 'wollongong' if "Wollongong" in pred.directory else 'darwin' 
+            typ = 'unit' if 'wu' in pred.directory else 'pressure'
+            for variable in data_variables:
+                value = pred[variable]
+                data[variable][city][typ].append(value)
+            data["particles"][city][typ].append(part)
+            data["directories"][city][typ].append(pred.directory)
+
+        for city in ["darwin", "wollongong"]:         
+            for typ in ["unit", "pressure"]:
+                ids = np.argsort(data["particles"][city][typ])
+                data["particles"][city][typ] = np.array(data["particles"][city][typ])[ids]
+                data["directories"][city][typ] = np.array(data["directories"][city][typ])[ids]
+                for variable in data_variables:
+                    data[variable][city][typ] = np.array(data[variable][city][typ])[ids]
+        return data
+
+    def _get_prediction_data_legacy2(self):
+        data_variables = ["enhancement"]
+        data = dict()
+        data_setup = dict(darwin = dict(unit = [], pressure = []), wollongong = dict(unit = [], pressure = []))
+        data["particles"] = deepcopy(data_setup)
+        data["directories"] = deepcopy(data_setup)
+        for variable in data_variables:
+            data[variable] = deepcopy(data_setup)
+        
+        for i in range(len(self.predictions)):
+            pred = self.predictions.iloc[i]
+            part = int(pred.directory.rsplit("k",1)[0][-3:])
+            city = 'wollongong' if "wollongong" in pred.directory else 'darwin' 
+            typ = 'unit' if 'wu' in pred.directory else 'pressure'
             for variable in data_variables:
                 value = pred[variable]
                 data[variable][city][typ].append(value)
@@ -111,7 +174,7 @@ class sensitivity():
                 elif style == "difference_norm":
                     title = f"Comparison of normalized difference of mean \n of {variable}"
                     ylabel = r"$\frac{value - mean}{mean}$"
-                    v = (v - np.mean(v))/np.mean(v)
+                    v = (v - np.mean(v))/np.mean(v)*100
                     bar_center = 0
                 elif style == "difference_end":
                     title = f"Comparison of difference to endpoint of {variable}"
@@ -121,20 +184,29 @@ class sensitivity():
                 elif style == "difference_end_norm":
                     title = f"Comparison of normalized difference of endpoint \n of {variable}"
                     ylabel = r"$\frac{value - value[-1]}{mean}$"
-                    v = (v - v[-1])/np.mean(v)
+                    v = (v - v[-1])/np.mean(v)*100
                     bar_center = 0
                 ax.scatter(p, v, marker=marker, c=color, label=f"{typ} {city}")
 
+
+
                 if band_vals is not None:
+                    if len(cities) > 1 or len(types) > 1:
+                        if band_style == "percent":
+                            assert "norm" in style, "Multiple cities with error band_style='percent' only possible for styles with 'norm'"
+                        if band_style == "absolute":
+                            assert  not "norm" in style, "Multiple cities with error band_style='absolute' only possible for styles without 'norm'"
+                        if i != len(cities)-1 or j != len(types)-1:
+                            continue 
                     xlim = ax.get_xlim()
                     ax.hlines(bar_center, *xlim, color="grey", linestyle="dashed")
                     if band_style == "percent":
                         last_err = 0
                         for i, band_val in enumerate(band_vals):
                             if "norm" in style:
-                                err = band_val/100
+                                err = band_val
                             else: 
-                                err = v.mean() * band_val/100
+                                err = v0.mean() * band_val/100
                             ax.fill_between([*xlim], bar_center + last_err, bar_center + err, color=band_colors[i], alpha=0.3, label=f"{band_val} % error band")
                             ax.fill_between([*xlim], bar_center - err, bar_center - last_err, color=band_colors[i],alpha=0.3)
                             ax.hlines(bar_center + err, *xlim, color=band_colors[i], linestyle="dashed")
@@ -213,6 +285,8 @@ class sensitivity():
         self, 
         city: str, 
         typ: str, 
+        bins:int = 10,
+        range: tuple|list = None,
         line: bool = True,
         file_ind: int=-1, 
         vline: int = 10,
@@ -223,6 +297,7 @@ class sensitivity():
         border_kwargs: dict = dict(),
         ax: plt.Axes=None, 
         figsize: tuple[int, int] = None, 
+        fix_xaxis: bool = True,
         **kwargs
         ) -> tuple[plt.Figure, plt.Axes]: 
         
@@ -249,18 +324,19 @@ class sensitivity():
         end = fd.trajectories.endpoints
         times = end.time.values
         times = np.sort(times)[::-1]
-        values, counts, _ = ax.hist(times, cumulative=-1, density=True, **kwargs)
+        values, counts, hist = ax.hist(times, cumulative=-1, density=True, bins=bins, range=range, **hist_kwargs)
         if line:
-            ax.clear()
-            ax.plot(((counts[1:] + counts[:-1])/2).astype("datetime64[D]"), values)
-        ax.invert_xaxis()
-        ax.get_yaxis().set_major_formatter(PercentFormatter(1, symbol=""))
-        # dates = ax.get_xticks().astype("datetime64[D]")
-        # dates = abs(dates-max(dates)).astype(int)
-        # with warnings.catch_warnings():
-        #     warnings.filterwarnings("ignore")
-        #     ax.set_xticklabels(dates)
-        ax.tick_params(axis='x', labelrotation=45)
+            hist.remove()
+            ax.plot(((counts[1:] + counts[:-1])/2).astype("datetime64[D]"), values, **line_kwargs)
+        if fix_xaxis:
+            ax.invert_xaxis()
+            ax.get_yaxis().set_major_formatter(PercentFormatter(1, symbol=""))
+            # dates = ax.get_xticks().astype("datetime64[D]")
+            # dates = abs(dates-max(dates)).astype(int)
+            # with warnings.catch_warnings():
+            #     warnings.filterwarnings("ignore")
+            #     ax.set_xticklabels(dates)
+            ax.tick_params(axis='x', labelrotation=45)
 
         ax.set_xlabel("Simulated time [days]")
         ax.set_ylabel("Amount of particles outside the domain [%]")
@@ -268,8 +344,10 @@ class sensitivity():
         
         ylim = ax.get_ylim()
         xlim = ax.get_xlim()
-        ax.vlines(max(times)- np.timedelta64(10, "D"), *ylim, **vline_kwargs)
-        ax.set_ylim(*ylim)
+        
+        if vline is not None:
+            ax.vlines(np.datetime64(fd.release["start"]) - np.timedelta64(vline, "D"), *ylim, **vline_kwargs)
+            ax.set_ylim(*ylim)
 
 
         for i, border in enumerate(border_list):
@@ -277,8 +355,8 @@ class sensitivity():
             linestyle = linestyle_list[i] if len(linestyle_list) == len(border_list) else linestyle_list[0]
             ax.hlines(border, *xlim, color=color, linestyle=linestyle, label=f"{border*100}%", **border_kwargs)
         ax.set_xlim(*xlim)
-        ax.legend()
+        #ax.legend()
         return fig, ax
 
 if __name__ == "__main__":
-    sens = sensitivity("/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl")
+    sens = Sensitivity("/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl")
