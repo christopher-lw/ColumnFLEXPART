@@ -7,38 +7,45 @@ import argparse
 from datetime import datetime
 
 class SatillitePositions():
-    def __init__(self, xarr, start=None, stop=None, quality_flag=0):
+    def __init__(self, xarr: xr.Dataset, start: str=None, stop: str=None, quality_flag: int=0, keep_co2: bool=False):
         self.xarr = self.select_quality(xarr, quality_flag)
         self._start = self.format_times(start)
         self._stop = self.format_times(stop) + np.timedelta64(1, "D")
     
-        self.dataframe = self.get_dataframe()
+        self.dataframe = self.get_dataframe(keep_co2)
 
     def select_quality(self, xarr: xr.Dataset, quality_flag: int) -> xr.Dataset:
         xarr = xarr.isel(sounding_id = (xarr.xco2_quality_flag <= quality_flag))
         return xarr
 
-    def get_dataframe(self):
+    def get_dataframe(self, keep_co2:bool) -> gpd.GeoDataFrame:
+        keys = ["time", "longitude", "latitude"]
+        data_keys = ["time"]
+        if keep_co2:
+            keys.append("xco2")
+            data_keys.append("xco2")
         try: 
-            xarr = self.xarr.drop("source_files")[["time", "longitude", "latitude"]]
+            # xarr = self.xarr.drop("source_files")[["time", "longitude", "latitude"]]
+            xarr = self.xarr.drop("source_files")[keys]
         except ValueError:
-            xarr = self.xarr[["time", "longitude", "latitude"]]
+            # xarr = self.xarr[["time", "longitude", "latitude"]]
+            xarr = self.xarr[keys]
         
         if self._start is not None: xarr = xarr.where(xarr.time >= self._start, drop=True)
         if self._stop is not None: xarr = xarr.where(xarr.time <= self._stop, drop=True)
         df = xarr.to_dataframe().reset_index()
         points = gpd.points_from_xy(df.longitude, df.latitude)
-        gdf = gpd.GeoDataFrame(data=df["time"], geometry=points, crs="EPSG:4326")
+        gdf = gpd.GeoDataFrame(data=df[data_keys], geometry=points, crs="EPSG:4326")
         return gdf
 
-    def select_country(self, country):
+    def select_country(self, country:str) -> gpd.GeoDataFrame:
         world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))[["name", "geometry"]]
         world.crs = 'epsg:4326'
         country_gdf = world[world.name == country][["geometry"]]
         selection = gpd.overlay(self.dataframe, country_gdf, how="intersection")
         return selection
     
-    def format_times(self, time):
+    def format_times(self, time: datetime|str) -> np.datetime64:
         if isinstance(time, datetime) or isinstance(time, np.datetime64) or time is None:
             return time
         else:
@@ -46,7 +53,7 @@ class SatillitePositions():
             time = np.datetime64(datetime(int(time[:4]), int(time[4:6]), int(time[6:])))
             return time
 
-    def format_selection(self, selection):
+    def format_selection(self, selection: gpd.GeoDataFrame) -> pd.DataFrame:
         #formatting time
         datetimes = selection.time.values.astype("datetime64[s]")
         datetimes = np.datetime_as_string(datetimes, unit="s")
@@ -64,7 +71,7 @@ class SatillitePositions():
         df = pd.DataFrame(data=dict(date=dates, time=times, longitude=lon, latitude=lat))
         return df        
         
-    def save_selection(self, df, dir, time_filename="times.txt", coord_filename="coords.txt"):
+    def save_selection(self, df: pd.DataFrame, dir: str, time_filename: str="times.txt", coord_filename: str="coord.txt"):
         times_str = ""
         coords_str = ""
         for (date, time, lon, lat) in zip(df.date.values, df.time.values, df.longitude.values, df.latitude.values):
@@ -78,7 +85,7 @@ class SatillitePositions():
         print(f"Saved data to: {os.path.join(dir, time_filename)}")
         print(f"Saved data to: {os.path.join(dir, coord_filename)}")
     
-    def preprocess(self, dir, country=None, **kwargs):
+    def preprocess(self, dir: str, country: str=None, **kwargs):
         df = None
         if country is not None:
             df = self.select_country(country)

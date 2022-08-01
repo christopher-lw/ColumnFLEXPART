@@ -102,7 +102,7 @@ def group_releases(dir: str) -> tuple[str, list[list[str]], np.ndarray, np.ndarr
     lat_list = np.array(lat_list, dtype=np.float32)
     return header, release_collections, lon_list, lat_list, index_collections
 
-def convert_partpoisit(dir: str) -> tuple[list[xr.Dataset], list[str]]:
+def convert_partposit(dir: str) -> tuple[list[xr.Dataset], list[str]]:
     """Converts partpoist files into xarray.Datasets. Returns Data and respective origin binary filename
 
     Args:
@@ -274,7 +274,7 @@ def main(enumerated_dir, name_scheme, args, disable_tqdms):
     # Filter RELEASES.namelist and copy other namelists
     header, release_collections, lon_list, lat_list, index_collections = group_releases(dir)
     footprint, footprint_file = get_footprint(dir)
-    partposit_data, partposit_files = convert_partpoisit(dir)
+    partposit_data, partposit_files = convert_partposit(dir)
     for j, release_collection in enumerate(tqdm(release_collections, desc = "Releases of directory", position=1, leave=False, disable=disable_tqdms)):
         # preparation
         file_counter = i*len(release_collections) + j
