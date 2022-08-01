@@ -1,5 +1,6 @@
 import argparse
 import os
+from xml.sax import parse
 import pandas as pd
 import numpy as np
 
@@ -10,7 +11,7 @@ def find_nc_files(dir, file_list=[]):
     found_file = False
     for file in os.listdir(dir):
         if "grid_time" in file:
-            file_list.append(os.path.join(dir, file))
+            file_list.append(dir)
             return
     if not found_file:
         for file in os.listdir(dir):
@@ -27,6 +28,8 @@ if __name__ == '__main__':
     parser.add_argument("conc_dir", type=str, help="Directory for concatenations for background calculation")
     parser.add_argument("conc_name", type=str, help="Name of files in conc_dir (until timestamp)")
     parser.add_argument("--boundary", type=float, nargs="+", default=None, help="Boundary to cut out for investigation [left, right, bottom, top]")
+    parser.add_argument("--read_only", action="store_true", default=False, help="Flag to only try to read saved values")
+    parser.add_argument("--out_name", type=str, default="predictions.pkl", help="Name for output pickle file (defaults to 'predictions.pkl')")
 
     args = parser.parse_args()
     files = find_nc_files(args.dir)
@@ -50,22 +53,28 @@ if __name__ == '__main__':
     backgrounds = []
     directories = []
 
-
-
-    for file in tqdm(files):
-        if not "trajectories.pkl" in os.listdir(os.path.dirname(file)):
-            continue
-        dir = os.path.dirname(file)        
+    for dir in tqdm(files):
+        if not "trajectories.pkl" in os.listdir(dir):
+            print(f"Missing trajectories.pkl in {dir}")
+            continue     
         try: 
-            fd = FlexDataset2(file, ct_dir=args.conc_dir, ct_name_dummy=args.conc_name, chunks=dict(time=20, pointspec=4))
+            fd = FlexDataset2(dir, ct_dir=args.conc_dir, ct_name_dummy=args.conc_name, chunks=dict(time=20, pointspec=4))
 
-            enhancement = fd.enhancement(allow_read=False, ct_file=args.flux_file, boundary=args.boundary)
+            enhancement = fd.enhancement(allow_read=args.read_only, ct_file=args.flux_file, boundary=args.boundary)
 
             tr = fd.trajectories
-            tr.ct_endpoints(boundary=args.boundary)
-            tr.co2_from_endpoints(boundary=args.boundary)
-            tr.save_endpoints()
-            background = fd.background(allow_read=False, boundary=args.boundary)
+            
+            if not args.read_only:
+                tr.ct_endpoints(boundary=args.boundary)
+                tr.co2_from_endpoints(boundary=args.boundary)
+                tr.save_endpoints()
+            else:
+                try: 
+                    tr.load_endpoints()
+                except Exception as e:
+                    print(e)
+
+            background = fd.background(allow_read=args.read_only, boundary=args.boundary)
 
             times.append(fd.release["start"])
             enhancements.append(enhancement)
@@ -76,4 +85,4 @@ if __name__ == '__main__':
             continue
     xco2 = np.array(enhancements) + np.array(backgrounds)
     dataframe = pd.DataFrame(data=dict(directory=directories, time=times, enhancement=enhancements, background=backgrounds, xco2=xco2))
-    dataframe.to_pickle(os.path.join(args.dir, "predictions.pkl"))
+    dataframe.to_pickle(os.path.join(args.dir, args.out_name))
