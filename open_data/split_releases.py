@@ -9,6 +9,7 @@ from open_data_utils import in_dir
 from tqdm.auto import tqdm
 from multiprocessing import Pool
 from functools import partial
+from typing import Union
 
 def get_output_dirs(path: str, r: bool, dirs: list[str] = []) -> list[str]:
     """Collects all dir with flexpart output. Optionally searches recursively beneath path
