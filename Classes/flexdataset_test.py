@@ -4,8 +4,14 @@ from pathlib import Path
 from flexdataset import Checkpoint, FlexDataset
 import numpy as np
 from copy import deepcopy
+from flexdataset import FlexBase
+from utils import yyyymmdd_to_datetime, hhmmss_to_timedelta
+import xarray as xr
+from datetime import datetime
 
-# Checkkpoint Class
+#################################################################
+#################### Checkkpoint Class ##########################
+#################################################################
 @pytest.fixture(params = [["a", "b"]])
 def get_checkpoint(tmp_path, request):
     checkpoint = Checkpoint(dir = tmp_path, keys = request.param)
@@ -118,3 +124,73 @@ def test_update(get_nonempty_checkpoint):
     loaded_local = deepcopy(checkpoint.local)
     assert old_local.items() < loaded_local.items()
     assert new_local.items() < loaded_local.items()
+
+
+#################################################################
+#################### FlexBase Class #############################
+#################################################################
+
+@pytest.fixture
+def output_directory_and_nc_file():
+    directory = Path("test_data/flex_output").resolve()
+    nc_file = "grid_time_20091130210000.nc"
+    return directory, nc_file
+
+@pytest.fixture
+def get_dataset(output_directory_and_nc_file):
+    directory, nc_file = output_directory_and_nc_file
+    nc_path = directory / nc_file
+    dataset = xr.load_dataset(nc_path)
+    return dataset
+
+# @pytest.fixture
+# def get_FlexBase(output_directory):
+#     fb = FlexBase(output_directory)
+
+def test_get_nc_path(output_directory_and_nc_file):
+    """Tests if FlexBase extracts correct nc_path"""
+    directory, nc_file = output_directory_and_nc_file
+    nc_path = FlexBase.get_nc_path(directory)
+    assert nc_path == directory / nc_file
+    # nc_file = None
+    # for file in output_directory.iterdir():
+    #     if "grid_time" in file.stem and ".nc"
+
+def test_get_metadata(output_directory_and_nc_file, get_dataset):
+    test_start = yyyymmdd_to_datetime("20091130") + hhmmss_to_timedelta("210000") 
+    test_stop = yyyymmdd_to_datetime("20091116") + hhmmss_to_timedelta("195959")
+    test_release = dict()
+    test_release["start"] = yyyymmdd_to_datetime("20091130") + hhmmss_to_timedelta("200000")
+    test_release["stop"] = yyyymmdd_to_datetime("20091130") + hhmmss_to_timedelta("195959")
+    test_release["lon1"] = 150.878998
+    test_release["lon2"] = 150.878998
+    test_release["lat1"] = -34.4059982
+    test_release["lat2"] = -34.4059982
+    test_release["lon"] = (test_release["lon1"] + test_release["lon2"]) / 2
+    test_release["lat"] = (test_release["lat1"] + test_release["lat2"]) / 2
+    test_release["boundary_low"] = get_dataset.RELZZ1.values
+    test_release["boundary_up"] = get_dataset.RELZZ2.values
+    test_release["heights"] = np.mean(
+            [test_release["boundary_low"], test_release["boundary_up"]], axis=0
+        )
+
+    directory, nc_file = output_directory_and_nc_file
+    nc_path  = (directory / nc_file).resolve()
+    start, stop, release = FlexBase.get_metadata(nc_path)
+
+    assert isinstance(start, datetime)
+    assert isinstance(stop, datetime)
+    assert isinstance(release, dict)
+    assert test_start == start
+    assert test_stop == stop
+    assert test_release.keys() == release.keys()
+    for (_, test_value), (key, value) in zip(test_release.items(), release.items()):
+        try: 
+            assert (test_value == value).all()
+        except AttributeError:
+            assert test_value == value
+
+#################################################################
+#################### FlexBase Class #############################
+#################################################################
+

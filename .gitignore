@@ -26,6 +26,7 @@ open_data/FlexDataset_discarded.py
 !flex_release/configs/pressure.yaml
 !open_data/data/co2_annmean_gl.csv
 !Classes/flexdataset_test.py
+!Classes/test_data
 open_data/showcase.ipynb
 flex_release/dummies/.ipynb_checkpoints/run_local-checkpoint.sh
 .ipynb_checkpoints/README-checkpoint.md
