@@ -1,4 +1,3 @@
-import copy
 import json
 import os
 from datetime import date, datetime
@@ -18,6 +17,7 @@ import xarray as xr
 from matplotlib.colors import LogNorm
 from shapely.geometry import Polygon
 from typing import Iterable, Any
+from copy import deepcopy
 
 # import geoplot
 # import contextily as ctx
@@ -67,429 +67,6 @@ def printval(inp):
     out = out["val"]
     print(f"{inp}: {out}")
 
-
-def load_era_to_gdf(file, data_keys=["u", "v", "w"], coarsen=None):
-    """
-    Returns a geodataframe with geomertry Point(long, lat) and columns: ["time", "level"] + data_keys.
-
-        Parameters:
-            file (str): Path to nc file
-            data_keys (list): List of str naming wind field coordinates to extract
-            coarsen (int/list): If int is given longitude and latitude are averaged over with neighbors according to int.
-                                If list is given as [x, y] then longitude (x) and latitude (y) are averaged over differnent numbers of neighbors.
-
-        Returns:
-            geodataframe (gpd.GeoDataFrame): Frame of era data
-    """
-    #
-    assert coarsen is None or type(coarsen) in (int, list)
-    coarsen = [coarsen, coarsen] if type(coarsen) == int else coarsen
-
-    # load file into xarray
-    dataset = xr.open_mfdataset(file, combine="by_coords", concat_dim="None")
-    # center coordinates
-    dataset.longitude.values = (dataset.longitude.values + 180) % 360 - 180
-    # extract u,v,w values
-    if coarsen is not None:
-        data_dict = {
-            key: dataset[key]
-            .coarsen(longitude=coarsen[0], latitude=coarsen[1], boundary="trim")
-            .mean()
-            for key in data_keys
-        }
-        # data_dict = {key: dataset[key][::100,...].coarsen(longitude=coarsen[0], latitude=coarsen[1], boundary='trim').mean() for key in data_keys}
-    else:
-        data_dict = {key: dataset[key] for key in data_keys}
-
-    # convert to frames and remove unnecessary columns
-    frame_list = [data_dict[key].to_dataframe(key).reset_index() for key in data_keys]
-    for i in range(len(frame_list)):
-        if i > 0:
-            frame_list[i] = frame_list[i].drop(
-                ["time", "level", "longitude", "latitude"], axis=1
-            )
-    # merge u,v,w into one pd.DataFrame
-    dataframe = pd.concat(frame_list, axis=1)
-    # use merge instead
-    # build GeoDataFrame
-    geodataframe = gpd.GeoDataFrame(
-        dataframe[["time", "level"] + data_keys],
-        geometry=gpd.points_from_xy(dataframe.longitude, dataframe.latitude),
-        crs="EPSG:4326",
-    )
-
-    return geodataframe
-
-
-def plot_hwind_field(
-    fig, ax, gdf, time, level, normalize=False, plot_range=None, use_cmap=True, **kwargs
-):
-    """
-    Returns figure and axis of plot of horizonal wind field.
-
-        Parameters:
-            fig (Figure): Figure to plot to
-            ax (Axes): Axes to plot to
-            gdf (gpd.GeoDataFrame): Frame of era data
-            time (str): Date in format "YYYY-MM-DD"
-            level (float): Height
-            normalize (bool): Whether to normalize the vectors or not
-            plot_range (list/nd.array): Specifiy rectangle to be plottet in format [[x1,x2],[y1,y2]]
-            use_cmap (bool): Specify if length should be used for cmap
-            **kwargs: for quiver
-
-        Returns:
-            fig (Figure): Figure with plot
-            ax (Axes): Axes of quiver plot
-    """
-    ax.set_title("Horizontal wind field ({} at {} hPa)".format(time, level))
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-
-    if plot_range is not None:
-        gdf = gdf.cx[
-            plot_range[0][0] : plot_range[0][1], plot_range[1][0] : plot_range[1][1]
-        ]
-
-    sel_gdf = gdf.loc[(gdf["time"] == time) & (gdf["level"] == level)]
-    # sel_gdf = sel_gdf.loc[]
-    field = np.array([sel_gdf["u"].values, sel_gdf["v"].values])
-    long = sel_gdf.geometry.x
-    lat = sel_gdf.geometry.y
-
-    norm = np.linalg.norm(field, axis=0)
-    if normalize:
-        field = field / norm
-    if use_cmap:
-        c = ax.quiver(long, lat, *field, norm, **kwargs)
-    else:
-        c = ax.quiver(long, lat, *field, **kwargs)
-
-    cbar = fig.colorbar(c, ax=ax)
-    cbar.set_label("Wind velocity [m/s]")
-    return fig, ax
-
-
-def add_world_map(fig, ax, plot_range=None, country=None, **kwargs):
-    """Add world map to ax of fig
-
-    Args:
-        fig (Figure): Figure to map on
-        ax (Axes): Axes to map on
-        plot_range (list/nd.array): Specifiy rectangle to be plottet in format [[x1,x2],[y1,y2]]
-        **kwargs: for world plot
-    Returns:
-        fig (Figure): Figure with plot
-        ax (Axes): Axes with world map
-    """
-    if plot_range is not None:
-        world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres")).cx[
-            plot_range[0][0] : plot_range[0][1], plot_range[1][0] : plot_range[1][1]
-        ]
-    else:
-        world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
-
-    if country is not None:
-        world = world[world.name == "Australia"]
-
-    world.plot(ax=ax, **kwargs)
-    return fig, ax
-
-
-def plot_hwind_field_season(
-    fig,
-    ax,
-    gdf,
-    season,
-    hemisphere,
-    year,
-    level,
-    normalize=False,
-    plot_range=None,
-    use_cmap=True,
-    **kwargs,
-):
-    """
-    Returns figure and axis of plots of horizonal wind fields averaged over season months and years. (Winter in northern hemisphere for e.g 2009 starts 12.2009 and ends 02.2010)
-
-        Parameters:
-            fig (Figure): Figure to plot to
-            ax (Axes or list of Axes): Axes(') to plot to
-            gdf (gpd.GeoDataFrame): Frame of era data
-            season (string or list of strings): seasons to be plotted or list of seasons
-            heisphere (string): Either "north" or "south" for correct seasons for \
-                respective hemisphere
-            year (int or list of ints): year(s) to use for averaging 
-            level (float): Height
-            normalize (bool): Whether to normalize the vectors or not
-            plot_range (list/nd.array): Specifiy rectangle to be plottet in format [[x1,x2],[y1,y2]] 
-            use_cmap (bool): Specify if length should be used for cmap 
-            **kwargs: for plt.quiver
-
-        Returns:
-            fig (Figure): Figure with plot
-            ax (Axes): Axes of quiver plot
-    """
-    assert hemisphere in ["north", "south"]
-    if hemisphere == "north":
-        season_dict = {
-            "summer": ["06", "07", "08"],
-            "autumn": ["09", "10", "11"],
-            "winter": ["12", "01", "02"],
-            "spring": ["03", "04", "05"],
-        }
-    elif hemisphere == "south":
-        season_dict = {
-            "summer": ["12", "01", "02"],
-            "autumn": ["03", "04", "05"],
-            "winter": ["06", "07", "08"],
-            "spring": ["09", "10", "11"],
-        }
-
-    ax = [ax] if type(ax) not in [list, np.ndarray] else ax
-    season = [season] if type(season) is not list else season
-
-    for i, a in enumerate(ax):
-        a.set_title(
-            "Horizontal wind field in {} ({}ern hemisphere) at {} hPa, {} ".format(
-                season[i], hemisphere, level, year
-            )
-        )
-        a.set_xlabel("Longitude")
-        a.set_ylabel("Latitude")
-
-    if plot_range is not None:
-        gdf = gdf.cx[
-            plot_range[0][0] : plot_range[0][1], plot_range[1][0] : plot_range[1][1]
-        ]
-
-    for i, s in enumerate(season):
-        s_months = season_dict[s]
-        print(
-            [
-                str(y if m not in ["01", "02"] else y + 1) + "-" + m + "-01"
-                for y in year
-                for m in s_months
-            ]
-        )
-        s_data = [
-            gdf.loc[
-                (
-                    gdf["time"]
-                    == str(y if m not in ["01", "02"] else y + 1) + "-" + m + "-01"
-                )
-                & (gdf["level"] == level)
-            ]
-            for y in year
-            for m in s_months
-        ]
-
-        long = s_data[0].geometry.x
-        lat = s_data[0].geometry.y
-
-        s_data = pd.concat(s_data)
-        s_data = s_data.groupby(["geometry"], sort=False).mean()
-
-        field = np.array([s_data["u"].values, s_data["v"].values])
-        norm = np.linalg.norm(field, axis=0)
-
-        if normalize:
-            field = field / norm
-        if use_cmap:
-            c = ax[i].quiver(long, lat, *field, norm, **kwargs)
-            cbar = fig.colorbar(c, ax=ax[i])
-            cbar.set_label("Wind velocity [m/s]")
-        else:
-            c = ax[i].quiver(long, lat, *field, **kwargs)
-
-    return fig, ax
-
-
-def plot_hwind_field_month(
-    fig,
-    ax,
-    gdf,
-    month,
-    year,
-    level,
-    normalize=False,
-    plot_range=None,
-    use_cmap=True,
-    **kwargs,
-):
-    """
-    Returns figure and axis of plots of horizonal wind fields averaged over season months and years. 
-
-        Parameters:
-            fig (Figure): Figure to plot to
-            ax (Axes or list of Axes): Axes(') to plot to
-            gdf (gpd.GeoDataFrame): Frame of era data \n
-            month (int/string or list or list of lists): Inner list: months to be averaged over,\
-                outer lists, sets for different plots
-            year (int or list of ints): year(s) to use for averaging 
-            level (float): Height
-            normalize (bool): Whether to normalize the vectors or not
-            plot_range (list/nd.array): Specifiy rectangle to be plottet in format [[x1,x2],[y1,y2]] 
-            use_cmap (bool): Specify if length should be used for cmap 
-            **kwargs: for plt.quiver
-
-        Returns:
-            fig (Figure): Figure with plot
-            ax (Axes): Axes of quiver plot
-    """
-    month = [month] if type(month) is not list else month
-    month = [[m for m in month]] if type(month[0]) is not list else month
-    for i, l in enumerate(month):
-        for j, m in enumerate(l):
-            month[i][j] = str(m)
-            month[i][j] = "0" + month[i][j] if len(month[i][j]) == 1 else month[i][j]
-    ax = [ax] if type(ax) not in [list, np.ndarray] else ax
-
-    for i, a in enumerate(ax):
-        a.set_title(
-            "Horizontal wind field (months: {}, years: {}, level: {} hPa)".format(
-                month[i], year, level
-            )
-        )
-        a.set_xlabel("Longitude")
-        a.set_ylabel("Latitude")
-
-    if plot_range is not None:
-        gdf = gdf.cx[
-            plot_range[0][0] : plot_range[0][1], plot_range[1][0] : plot_range[1][1]
-        ]
-
-    for i, months in enumerate(month):
-        m_data = [
-            gdf.loc[(gdf["time"] == str(y) + "-" + m + "-01") & (gdf["level"] == level)]
-            for y in year
-            for m in months
-        ]
-
-        long = m_data[0].geometry.x
-        lat = m_data[0].geometry.y
-
-        m_data = pd.concat(m_data)
-        m_data = m_data.groupby(["geometry"], sort=False).mean()
-
-        field = np.array([m_data["u"].values, m_data["v"].values])
-        norm = np.linalg.norm(field, axis=0)
-
-        if normalize:
-            field = field / norm
-        if use_cmap:
-            c = ax[i].quiver(long, lat, *field, norm, **kwargs)
-            cbar = fig.colorbar(c, ax=ax[i])
-            cbar.set_label("Wind velocity [m/s]")
-        else:
-            c = ax[i].quiver(long, lat, *field, **kwargs)
-
-    """cbar = fig.colorbar(c, ax=ax)
-    cbar.set_label("Wind velocity [m/s]")"""
-    return fig, ax
-
-
-def avg_by_time(dataset, avg_index=2, err_mode="std_err"):
-    """Extract data form xarray of e.g. obspack data and avereage over  year/month/days.. according to avg index 1/2/3... respectively
-
-    Args:
-        dataset (xarray.Dataset): Dataset to unpack and average.
-        avg_index (int, optional): Specification over time to average over (years/months/days.. according to avg index 1/2/3... respectively). Defaults to 2.
-        err_mode (str): Choose from: "std_err" (for calculation from data error), "std_dev" (for std of averaged data). Defaults to "std_err".
-
-    Returns:
-        numpy.ndarray: averaged CO2 values
-        numpy.ndarray: standard error of values
-        numpy.ndarray with numpy.datetime64: times of averages (month and year for avg_index=2)
-    """
-    keys = ["Y", "M", "D", "h", "m", "s"]
-    v_list = []
-    err_list = []
-    t_list = []
-    t, ind = np.unique(
-        dataset.time_components.values[:, :avg_index], axis=0, return_index=True
-    )
-    err_flag = False
-    for i in range(len(t) - 1):
-        err = None
-
-        if err_mode == "std_err":
-            try:
-                err = np.mean(
-                    dataset.value_std_dev.values[ind[i] : ind[i + 1]]
-                ) / np.sqrt(ind[i + 1] - ind[i])
-            except AttributeError:
-                err_flag = True
-        elif err_mode == "std_dev":
-            err = np.std(dataset.value.values[ind[i] : ind[i + 1]])
-
-        err_list.append(err)
-        t_list.append(
-            dataset.time.values[ind[i]].astype(
-                "datetime64[{}]".format(keys[avg_index - 1])
-            )
-        )
-        v = np.mean(dataset.value.values[ind[i] : ind[i + 1]])
-        v_list.append(v)
-    print(f"No error avaliable for data.") if err_flag else None
-    return np.array(v_list), np.array(err_list), np.array(t_list)
-
-
-def detrend_hawaii(values, times):
-    """Detrend CO2 measurement data according to Mauna Loa measurements https://gml.noaa.gov/ccgg/trends/gl_data.html
-
-    Args:
-        values (np.ndarray): CO2 measurements in ppm
-        times (np.datetime64): times of measurements
-
-    Returns:
-        np.ndarray: detrended values
-    """
-    # get data of ann means
-    data = pd.read_csv(
-        "/home/clueken/master/open_data/data/co2_annmean_gl.csv", ",", header=0
-    )
-    # extract time of means as YYYY-07-01
-    years = data.year.to_numpy(dtype="str").astype("datetime64") + np.array(
-        "06", dtype="timedelta64[M]"
-    )
-    # extract means
-    mean = data["mean"].to_numpy()
-    # find indices thar are closest to times of data
-    ind = np.sort(
-        np.argsort(np.abs(times[:, None] - years[None, :]), axis=-1)[:, :2], axis=-1
-    )
-    # calculate point of interpolation
-    deltas = times - years[ind[:, 0].T]
-    frac = deltas / np.timedelta64(1, "Y").astype(deltas.dtype)
-    # do the interpolation
-    interpolation = mean[ind[:, 0].T] + (mean[ind[:, 1].T] - mean[ind[:, 0].T]) * frac
-    # subtract background
-    det = values - interpolation
-    return det
-
-
-def merge_arange(times, values, min_time, max_time, type):
-    """Set equally distanced times and sort values to respective slots in dataframe.
-
-    Args:
-        times (numpy.ndarray): times of data
-        values (numpy.ndarray): data values
-        min_time (str): date/time from which arange starts
-        max_time (str): data/time at which arange ends
-        type (str): steps (Y, M, D, ...)
-
-    Returns:
-        pandas.DataFrame: values organized in times of np.arange(min_time, max_time)
-    """
-    full_times = np.arange(min_time, max_time, dtype=f"datetime64[{type}]")
-    df = pd.DataFrame({"times": full_times})
-
-    times = times.astype(f"datetime64[{type}]")
-
-    df_val = pd.DataFrame({"times": times, "values": values})
-    df = df.merge(df_val, on="times", how="outer")
-    return df
 
 
 def xr_to_gdf(xarr, *data_variables, crs="EPSG:4326"):
@@ -727,6 +304,9 @@ class FlexDataset2:
         self._enhancement = None
         self._enhancement_layer = None
         self._enhancement_inter = None
+        self._total = None
+        self._total_layer = None
+        self._total_inter = None
         
         self._last_boundary = None
 
@@ -883,9 +463,26 @@ class FlexDataset2:
             mode = "load"
         else:
             mode = "calculate"
-        print(f"mode = {mode}")
+        print(f"{key}: mode = {mode}")
         return mode
 
+    def to_pointspec_dataarray(self, data: list, name: str) -> xr.DataArray:
+        """Constructs an xr.DataArray from onedimensional data of lenght of "pointspec" and uses "pointspec" as dimension.
+
+        Args:
+            data (list): One dimensional data of lenght of pointspec
+            name (str): Name to set for DataArray
+
+        Returns:
+            xr.DataArray: DataArray with data aligned to pointspec as coordinates for further processing with "interpolate_to_acos_levels"
+        """        
+        dataarray = xr.DataArray(
+                    data, 
+                    coords = dict(pointspec = self.footprint.dataset.pointspec.values),
+                    dims = dict(pointspec = self.footprint.dataset.pointspec.values),
+                    name = name
+                    )
+        return dataarray
 
     def enhancement_layer(
         self,
@@ -920,7 +517,7 @@ class FlexDataset2:
         allow_read: bool = True,
         boundary: list[float, float, float, float] = None,
         force_calculation: bool = False,
-    ) -> float:
+    ) -> list[float]:
         mode = self.get_result_mode(self._background_layer, "background_layer", allow_read, force_calculation, boundary)
         if mode == "from_instance":
             pass
@@ -940,6 +537,62 @@ class FlexDataset2:
             self.save_result("background_layer", self._background_layer, boundary)
         return self._background_layer
 
+    def total_layer(
+        self,
+        ct_file: str = None,
+        allow_read: bool=True,
+        boundary: list[float, float, float, float] = None,
+        force_calculation: bool = False,
+        chunks: dict = dict(time=10)
+    ) -> list[float]:
+        mode = self.get_result_mode(self._total_layer, "total_layer", allow_read, force_calculation, boundary)
+        if mode == "from_instance":
+            pass
+        elif mode == "load":
+            self._total_layer = self.load_result("total_layer", boundary)
+        elif mode == "calculate":
+            background = self.background_layer(allow_read=allow_read, force_calculation=force_calculation, boundary=boundary)
+            enhancement = self.enhancement_layer(ct_file, allow_read=allow_read, force_calculation=force_calculation, chunks=chunks)
+            self._total_layer = list(np.array(background) + np.array(enhancement))
+            self.save_result("total_layer", self._total_layer, boundary)
+        return self._total_layer
+
+    def total(self,
+        ct_file: str = None,
+        allow_read: bool=True,
+        boundary: list[float, float, float, float] = None,
+        force_calculation: bool = False,
+        chunks: dict = dict(time=10),
+        interpolate: bool = True
+    ) -> float:
+        total_layer = self.total_layer(ct_file, allow_read, boundary, force_calculation, chunks)
+        if interpolate:
+            mode = self.get_result_mode(self._total_inter, "total_inter", allow_read, force_calculation, boundary)
+            if mode == "from_instance":
+                pass
+            elif mode == "load":
+                self._total_inter = self.load_result("total_inter", boundary)
+            elif mode == "calculate":
+                total_layer = self.to_pointspec_dataarray(total_layer, "total_layer")
+                pressures = self.sounding.pressure_levels.values[0,-1] * self.pressure_factor(self.release["heights"], Tb=273.15 + 22)
+                total_layer = self.interpolate_to_acos_levels(total_layer, "pointspec", pressures, self.sounding)
+                total_layer = self.add_acos_variables(total_layer, self.sounding)
+                self._total_inter = self.pressure_weighted_sum(total_layer, "total_layer", with_averaging_kernel = True).values
+                self._total_inter = float(self._total_inter)
+                self.save_result("total_inter", self._total_inter, boundary)
+            return self._total_inter
+        else: 
+            mode = self.get_result_mode(self._total, "total", allow_read, force_calculation, boundary)
+            if mode == "from_instance":
+                pass
+            elif mode == "load":
+                self._total = self.load_result("total", boundary)
+            elif mode == "calculate":    
+                pressure_weights = self.pressure_weights_from_height()
+                self._total = (total_layer * pressure_weights).sum()
+                self.save_result("total", self._total, boundary)
+            return self._total
+    
     def enhancement(
         self,
         ct_file: str = None,
@@ -968,12 +621,7 @@ class FlexDataset2:
             elif mode == "load":
                 self._enhancement_inter = self.load_result("enhancement_inter", boundary)
             elif mode == "calculate":    
-                molefractions = xr.DataArray(
-                    molefractions, 
-                    coords = dict(pointspec = self.footprint.dataset.pointspec.values),
-                    dims = dict(pointspec = self.footprint.dataset.pointspec),
-                    name = "enhancement_layer"
-                    )
+                molefractions = self.to_pointspec_dataarray(molefractions, "enhancement_layer")
                 pressures = self.sounding.pressure_levels.values[0,-1] * self.pressure_factor(self.release["heights"], Tb=273.15 + 22)
                 molefractions = self.interpolate_to_acos_levels(molefractions, "pointspec", pressures, self.sounding)
                 molefractions = self.add_acos_variables(molefractions, self.sounding)
@@ -1018,18 +666,12 @@ class FlexDataset2:
             elif mode == "load":
                 self._background_inter = self.load_result("background_inter", boundary)
             elif mode == "calculate":
-                co2_means = xr.DataArray(
-                    co2_means, 
-                    coords = dict(pointspec = self.footprint.dataset.pointspec.values),
-                    dims = dict(pointspec = self.footprint.dataset.pointspec),
-                    name = "background_layer"
-                    )
+                co2_means = self.to_pointspec_dataarray(co2_means, "background_layer")
                 pressures = self.sounding.pressure_levels.values[0,-1] * self.pressure_factor(self.release["heights"], Tb=273.15 + 22)
                 co2_means = self.interpolate_to_acos_levels(co2_means, "pointspec", pressures, self.sounding)
                 co2_means = self.add_acos_variables(co2_means, self.sounding)
                 self._background_inter = self.pressure_weighted_sum(co2_means, "background_layer", with_averaging_kernel=True).values
                 self._background_inter = float(self._background_inter)
-
                 self.save_result("background_inter", self._background_inter, boundary)
             return self._background_inter
             
@@ -1073,7 +715,7 @@ class FlexDataset2:
         return dataset
     
     @staticmethod
-    def pressure_weighted_sum(dataset: xr.Dataset, data_var: str, with_averaging_kernel: bool = True):
+    def pressure_weighted_sum(dataset: xr.Dataset, data_var: str, with_averaging_kernel: bool = True) -> xr.DataArray:
         dataarray = dataset[data_var]
         if with_averaging_kernel:
             averaging_kernel = dataset.xco2_averaging_kernel
@@ -1116,16 +758,16 @@ class FlexDataset2:
         if os.path.exists(file):
             with open(file) as f:
                 data = json.load(f)
-            try:    
-                data[str(boundary)] = float(result)
-            except TypeError:
-                if isinstance(result, np.ndarray):
-                    result = result.astype(float)
-                data[str(boundary)] = list(result)
+        try:    
+            data[str(boundary)] = float(result)
+        except TypeError:
+            if isinstance(result, np.ndarray):
+                result = result.astype(float)
+            data[str(boundary)] = list(result)
         with open(file, "w") as f:
             json.dump(data, f)
 
-    def delete_results(self, names=["enhancement", "enhancement_inter", "enhancement_layer", "background", "background_inter", "background_layer"]):
+    def delete_results(self, names=["enhancement", "enhancement_inter", "enhancement_layer", "background", "background_inter", "background_layer", "total", "total_inter", "total_layer"]):
         for name in names:
             file = os.path.join(self._dir, f"{name}.json")
             if os.path.exists(file):
@@ -1138,6 +780,9 @@ class FlexDataset2:
         self._enhancement = None
         self._enhancement_layer = None
         self._enhancement_inter = None
+        self._total = None
+        self._total_layer = None
+        self._total_inter = None
 
     # def get_pressures(self, heights, lon, lat):
     #     pressures = self.pressure_factor(heights)
@@ -1192,7 +837,7 @@ class FlexDataset2:
 
     class Footprint:
         def __init__(self, outer):
-            self._outer = outer
+            self._outer: FlexDataset2 = outer
             self._nc_path = outer._nc_path
             self._dir = outer._dir
             self.extent = outer._kwargs["extent"]
@@ -1208,42 +853,82 @@ class FlexDataset2:
                 self.dataarray = self.dataarray.persist()
 
             self._total = None
+            self._total_inter = None
+            self._total_inter_time = None
 
-        def save_total(self):
+        def reset(self):
+            self._total = None
+            self._total_inter = None
+            self._total_inter_time = None
+        
+        def delete_results(self):
+            files = ["Footprint_total.nc", "Footprint_total_inter.nc", "Footprint_total_inter_time.nc"]
+            for file in files:
+                if os.path.exists(os.path.join(self._dir, file)):
+                    os.remove(os.path.join(self._dir, file))
+        def save_total(self, interpolate: bool = True):
             """Saves Footprints
 
             Args:
                 include_sums (bool, optional): _description_. Defaults to True.
             """
-            sum_path = os.path.join(self._dir, "Footprint_total.nc")
-            self._total.to_netcdf(sum_path)
+            if interpolate:
+                inter_time_path = os.path.join(self._dir, "Footprint_total_inter_time.nc")
+                inter_path = os.path.join(self._dir, "Footprint_inter.nc")
+                self._total_inter_time.to_netcdf(inter_time_path)
+                self._total_inter.to_netcdf(inter_path)
+            else:
+                sum_path = os.path.join(self._dir, "Footprint_total.nc")
+                self._total.to_netcdf(sum_path)
 
-        def calc_total(self):
+        def calc_total(self, interpolate: bool = True):
             """Calculates total Footprints"""
-            self._total = None
-            self._total = self.dataarray.sum(dim=["time", "pointspec"]).compute()
+            if interpolate:
+                if self._outer.sounding is None:
+                    raise ValueError("Cannot calculate total footprint with interpolation without sounding data. To interpolate first use FlexDataset2.load_sounding(). To just calculate sum over heights set interpolate=False")
+                self._total_inter = None
+                pressures = self._outer.sounding.pressure_levels.values[0,-1] * self._outer.pressure_factor(self._outer.release["heights"], Tb=273.15 + 22)
+                total = self._outer.interpolate_to_acos_levels(self.dataarray, "pointspec", pressures, self._outer.sounding)
+                total = self._outer.add_acos_variables(total, self._outer.sounding, ["pressure_weight"])
+                self._total_inter_time = self._outer.pressure_weighted_sum(total, self.datakey, with_averaging_kernel=False).compute()
+                self._total_inter = self._total_inter_time.sum("time")
+                return self._total_inter
 
-        def load_total(self):
+            else:
+                self._total = None
+                self._total = self.dataarray.sum(dim=["time", "pointspec"]).compute()
+                return self._total
+
+        def load_total(self, interpolate: bool = True):
             """Loads Footprints from directory of DataSet data"""
-            self._total = None
-            path = os.path.join(self._dir, "Footprint_total.nc")
-            self._total = xr.load_dataarray(path)
+            if interpolate:
+                self._total_inter_time = None
+                self._total_inter = None
+                inter_time_path = os.path.join(self._dir, "Footprint_total_inter_time.nc")
+                inter_path = os.path.join(self._dir, "Footprint_inter.nc")
+                self._total_inter_time = xr.load_dataarray(inter_time_path)
+                self._total_inter = xr.load_dataarray(inter_path)
+            else:
+                self._total = None
+                path = os.path.join(self._dir, "Footprint_total.nc")
+                self._total = xr.load_dataarray(path)
 
-        def total(self):
+        def total(self, interpolate: bool = True):
             """Get footprints from either loading of calculation"""
             if self._total is None:
                 try:
-                    self.load_total()
+                    self.load_total(interpolate)
                 except FileNotFoundError:
-                    self.calc_total()
-                    self.save_total()
-            return self._total
+                    self.calc_total(interpolate)
+                    self.save_total(interpolate)
+            return self._total if not interpolate else self._total_inter
 
         def plot(
             self,
             ax: plt.Axes = None,
             time: list[int] = None,
             pointspec: list[int] = None,
+            interpolate: bool = True,
             plot_func: str = None,
             plot_station: bool = True,
             add_map: bool = True,
@@ -1251,13 +936,13 @@ class FlexDataset2:
             **kwargs,
         ) -> tuple[plt.Figure, plt.Axes]:
 
-            plot_kwargs = self._plot_kwargs.copy()
+            plot_kwargs = deepcopy(self._plot_kwargs)
             plot_kwargs.update(kwargs)
             if ax is None:
                 fig, ax = self._outer.subplots()
             else:
                 fig = ax.get_figure()
-            footprint = self.sum(time, pointspec)
+            footprint = self.sum(time, pointspec, interpolate)
             footprint = footprint.where(footprint != 0)[:, :, ...]
             if plot_func is None:
                 footprint.plot(ax=ax, **plot_kwargs)
@@ -1280,11 +965,11 @@ class FlexDataset2:
         @to_tuple(["time", "pointspec"], [1, 2])
         @cache
         def sum(
-            self, time: list[int] = None, pointspec: list[int] = None
+            self, time: list[int] = None, pointspec: list[int] = None, interpolate: bool = True
         ) -> xr.DataArray:
             footprint = None
             if time is None and pointspec is None:
-                footprint = self.total()
+                footprint = self.total(interpolate)
             elif time is None:
                 footprint = self.dataarray.sum(dim=["time"])
                 footprint = (
@@ -1538,3 +1223,30 @@ def in_dir(path: str, string: str) -> bool:
         if string in file:
             return True
     return False
+
+
+if __name__ == "__main__":
+    dir_name = "/work/bb1170/RUN/b381737/data/CT2019/Conc3hour_3x2/"
+    file_dummy = "CT2019B.molefrac_glb3x2_"
+    ct_file = "/work/bb1170/static/CT2019/Flux3hour_1x1/CT2019B.flux1x1."
+    acos_file = "/work/bb1170/RUN/b381737/data/ACOS/acos_LtCO2_"
+
+    fd = FlexDataset2("/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2009/10_unpacked/RELEASES_27_1/", ct_dir = dir_name, ct_name_dummy=file_dummy)
+    fd.trajectories.load_endpoints()
+    fd.load_sounding(acos_file)
+
+    # fd.reset()
+    # fd.delete_results()
+
+    # print(fd.background(boundary = [110.0, 155.0, -45.0, -10.0], interpolate=True))
+    # print(fd.background(boundary = [110.0, 155.0, -45.0, -10.0], interpolate=False))
+
+    # print(fd.enhancement(ct_file=ct_file, boundary = [110.0, 155.0, -45.0, -10.0], interpolate=True))
+    # print(fd.enhancement(ct_file=ct_file, boundary = [110.0, 155.0, -45.0, -10.0], interpolate=False))
+
+    # print(fd.total(ct_file=ct_file, boundary = [110.0, 155.0, -45.0, -10.0], interpolate=True))
+    # print(fd.total(ct_file=ct_file, boundary = [110.0, 155.0, -45.0, -10.0], interpolate=False))
+    fd.footprint.delete_results()
+    fd.footprint.total()
+
+    print(fd.footprint.total())
