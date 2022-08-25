@@ -197,13 +197,13 @@ if __name__ == '__main__':
     paths = get_paths(config, args.releases_index)
     check_paths(paths)
     flex_path, releases_file, options_path, output_path, pathnames_file, input_paths, available_files, exe_path = paths
-
+    # Secure no conflicts of different runs
     lock = FileLock(f"{pathnames_file}.lock")
     with lock:
         output_path = prepare_output_dir(output_path, releases_file)
         log_file = os.path.join(output_path, "log")
         shutil.copyfile(releases_file, os.path.join(options_path, "RELEASES"))
-        # start means from point of view of the simulation (start > stop)
+        # start/stop from point of view of the simulation (start > stop)
         start, stop = get_start_stop(releases_file, config["start_step"], config["start_shift"], config["sim_length"])
         prepare_command(options_path, start, stop)
         prepare_pathnames(pathnames_file, options_path, output_path, input_paths, available_files)

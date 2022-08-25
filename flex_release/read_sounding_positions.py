@@ -1,5 +1,4 @@
 import os
-from xml.sax import parse
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -105,6 +104,30 @@ class SatillitePositions():
         df = self.format_selection(df)
         self.save_selection(df, dir, **kwargs)
 
+def get_out_names(out_name: str, start: str, stop: str) -> tuple[str, str]:
+    """Constructs a filename for the output depending on arguments given.
+
+    Args:
+        out_name (str): name_to be set after "time_" if "" then start and stop are used for the filename
+        start (str): start of inscluded data
+        stop (str): stop of included data
+
+    Returns:
+        tuple[str, str]: name of time file, name of coords file
+    """        
+    extension = ".txt"
+    if out_name == "":
+        if start is not None and stop is not None:
+            if start == stop:
+                extension = f"_{start}{extension}"
+            else:
+                extension = f"_{start}-{stop}{extension}"
+    else:
+        extension = f"_{out_name}{extension}"
+    time_filename = "times" + extension
+    coord_filename = "coords" + extension
+    return time_filename, coord_filename
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Script to convert acos data to time and coordinate files readable for prepare_release.py")
     parser.add_argument("input_directory", type=str, help="Directory from which all ACOS files are loaded")
@@ -136,17 +159,7 @@ if __name__ == "__main__":
     logging.debug("open_dataset...")    
     xarr = xr.open_mfdataset(files, drop_variables="source_files")
     logging.debug("done")
-    extension = ".txt"
-    if args.out_name == "":
-        if start is not None and stop is not None:
-            if start == stop:
-                extension = f"_{start}{extension}"
-            else:
-                extension = f"_{start}-{stop}{extension}"
-    else:
-        extension = f"_{args.out_name}{extension}"
-    time_filename = "times" + extension
-    coord_filename = "coords" + extension
+    time_filename, coord_filename = get_out_names(args.out_name, start, stop)
 
     data = SatillitePositions(xarr, start=start, stop=stop)
     data.preprocess(dir=dir_out, country=args.country, time_filename=time_filename, coord_filename=coord_filename)
