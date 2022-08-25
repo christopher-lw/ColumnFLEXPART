@@ -204,6 +204,11 @@ if __name__ == "__main__":
         coords = setup_coords(config)
         times = setup_times(config)
 
+        if len(coords) == 1:
+            coords = coords*len(times)
+        elif len(times) == 1:
+            times = times*len(coords)
+
         assert len(coords) == len(times), f'Coords and times have the same number of elements. Your input: len(coords)={len(coords)}, len(times)={len(times)}'
 
         # list of strings to hold information for RELEASES file
