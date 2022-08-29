@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import json
 import os
 from datetime import date, datetime
@@ -67,7 +68,19 @@ def printval(inp):
     out = out["val"]
     print(f"{inp}: {out}")
 
+def detrend_hawaii(dataframe: pd.DataFrame, variable: str, time_variable:str = "time"):
 
+    noaa_data = pd.read_csv(Path(__file__).parent / "data/co2_annmean_gl.csv", delimiter=",", header=0).sort_values("year")
+    noaa_data.insert(1, "year_corrected", noaa_data.year.to_numpy(dtype="str").astype("datetime64") + np.timedelta64(6, "M"))
+
+    dataframe.sort_values(time_variable)
+    reference = noaa_data.year_corrected.values.min().astype("datetime64")
+    time_data = (dataframe[time_variable].values.astype("datetime64") - reference).astype(float)
+    time_noaa = (noaa_data.year_corrected.values.astype("datetime64") - reference).astype(float)
+    correction = np.interp(x = time_data, xp = time_noaa, fp = noaa_data["mean"].values)
+
+    dataframe.insert(1, f"{variable}_detrend", dataframe[variable] - correction)
+    return dataframe
 
 def xr_to_gdf(xarr, *data_variables, crs="EPSG:4326"):
     """Convert xarray.DataArray to GeoDataFrame

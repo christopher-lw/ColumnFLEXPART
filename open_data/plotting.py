@@ -1,6 +1,9 @@
 import numpy as np
 import pandas as pd
+import xarray as xr
 
+from pathlib import Path
+from typing import Union, Literal
 import os
 import warnings
 from functools import cache
@@ -8,27 +11,27 @@ from copy import deepcopy
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
-from matplotlib.ticker import PercentFormatter
+from matplotlib.ticker import PercentFormatter, FormatStrFormatter
+from matplotlib import cm
 
-from open_data_utils import FlexDataset2
+from open_data_utils import FlexDataset2, detrend_hawaii
 
 settings = dict()
 
 path = "/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl"
 
 class Sensitivity():
-    def __init__(self, predictions_file: str, mode=0):
+    def __init__(self, predictions_file: str, mode=0, data_variables: list[str]=["enhancement", "background", "xco2"]):
         self.predictions_file = predictions_file
         self.predictions = pd.read_pickle(predictions_file)
         if mode == 0:
-            self.data = self._get_prediction_data() 
+            self.data = self._get_prediction_data(data_variables) 
         elif mode == 1:
             self.data = self._get_prediction_data_legacy()
         elif mode == 2:
             self.data = self._get_prediction_data_legacy2()
 
-    def _get_prediction_data(self):
-        data_variables = ["enhancement", "background", "xco2"]
+    def _get_prediction_data(self, data_variables: list[str]=["enhancement", "background", "xco2"]):
         data = dict()
         data_setup = dict(darwin = dict(unit = [], pressure = []), wollongong = dict(unit = [], pressure = []))
         data["particles"] = deepcopy(data_setup)
@@ -190,7 +193,7 @@ class Sensitivity():
 
 
 
-                if band_vals is not None:
+                if not band_vals is None:
                     if len(cities) > 1 or len(types) > 1:
                         if band_style == "percent":
                             assert "norm" in style, "Multiple cities with error band_style='percent' only possible for styles with 'norm'"
@@ -345,7 +348,7 @@ class Sensitivity():
         ylim = ax.get_ylim()
         xlim = ax.get_xlim()
         
-        if vline is not None:
+        if not vline is None:
             ax.vlines(np.datetime64(fd.release["start"]) - np.timedelta64(vline, "D"), *ylim, **vline_kwargs)
             ax.set_ylim(*ylim)
 
@@ -357,6 +360,326 @@ class Sensitivity():
         ax.set_xlim(*xlim)
         #ax.legend()
         return fig, ax
+        
+Pathlike = Union[Path,str]
+
+class Results():
+    def __init__(self, dirs: list[Pathlike], filenames: list[Pathlike] = ["results.pkl"]):
+        self.dirs = [Path(dir) for dir in dirs]
+        self.filenames = filenames if len(filenames) != 1 else filenames*len(self.dirs)
+        self.predictions = self.get_predictions()
+
+    def get_predictions(self) -> list[pd.DataFrame]:
+        """Loads all prediction files into one dataframe"""
+        predictions = []
+        for dir, filename in zip(self.dirs, self.filenames):
+            file = dir / filename
+            predictions.append(pd.read_pickle(file))
+        predictions = pd.concat(predictions).reset_index(drop=True)
+        return predictions.sort_values("time")
+
+    def mean(self, data, frame: str):
+        if frame == "month":
+            dt_val = "M"
+        elif frame == "day":
+            dt_val = "D"
+        else:
+            raise ValueError(f"Only acceptable values for frame: 'month', 'day'. Not {frame}")
+        data = deepcopy(data)
+        data.insert(1, frame, data.time.values.astype(f"datetime64[{dt_val}]"))
+        data = data.groupby(frame, as_index=False).mean()
+        return data
+
+    def monthly_average_over_time(
+        self, 
+        ax: plt.Axes = None,
+        interpolated: bool = True,
+        ignore_defaults: bool = False,
+        plot_acos: bool = True,
+        acos_kwargs: dict = dict(),
+        model_kwargs: dict = dict(),
+        plot_enh: bool = True,
+        enh_kwargs: dict = dict(),
+        enh_pos_kwargs: dict = dict(),
+        enh_neg_kwargs: dict = dict(),
+        plot_bgd: bool = True,
+        bgd_kwargs: dict = dict(),
+        figsize: tuple[int, int] = (7,5),
+        detrend: bool = False,
+        ) -> tuple[plt.Figure, plt.Axes]:
+        """PLots monthly average of xco2 prediction in comparison to acos data. 
+
+        Args:
+            ax (plt.Axes, optional): Axes to plot on. Defaults to None.
+            interpolated (bool, optional): Wheter or not to use interpolated values (with averaging kernel). Defaults to True.
+            ignore_defaults (bool, optional): Whether only kwargs set by user are to be used. Defaults to False.
+            plot_acos (bool, optional): Whether to plot acos dataframe. Defaults to True.
+            acos_kwargs (dict, optional): Kwargs of acos errorbar plot. Defaults to dict().
+            model_kwargs (dict, optional): Kwargs of modeled xco2 values. Defaults to dict().
+            plot_enh (bool, optional): Wether to plot enhancement data (fill_between). Defaults to True.
+            enh_kwargs (dict, optional): Kwargs to use in both fill_between plots. Defaults to dict().
+            enh_pos_kwargs (dict, optional): Kwargs for positive enhancement. Defaults to dict().
+            enh_neg_kwargs (dict, optional): Kwargs for negative enhancement. Defaults to dict().
+            plot_bgd (bool, optional): Wether to plot background. Defaults to True.
+            bgd_kwargs (dict, optional): Kwargs for background errorbar plot. Defaults to dict().
+            figsize (tuple[int, int], optional): Figsize. Defaults to (7,5).
+
+        Returns:
+            tuple[plt.Figure, plt.Axes]: Figure and Axes with plot
+        """        
+    
+        
+        acos_kw = dict()
+        model_kw = dict()
+        enh_kw = dict()
+        enh_pos_kw = dict()
+        enh_neg_kw = dict()
+        bgd_kw = dict()
+
+        acos_defaults = dict(fmt="o", linestyle="-", color="firebrick", label="ACOS") 
+        model_defaults = dict(fmt="o", linestyle="-", color="black", label="Model")
+        enh_defaults = dict(alpha=0.2)
+        enh_pos_defaults = dict(color="green", label="positive_enhancement")
+        enh_neg_defaults = dict(color="red", label="negative_enhancement")
+        bgd_defaults = dict(color="black", linestyle="dashed", linewidth=1, label="Model background")
+
+        if not ignore_defaults:
+            acos_kw.update(acos_defaults)
+            model_kw.update(model_defaults)
+            enh_kw.update(enh_defaults)
+            enh_pos_kw.update(enh_pos_defaults)
+            enh_neg_kw.update(enh_neg_defaults)
+            bgd_kw.update(bgd_defaults)
+
+        acos_kw.update(acos_kwargs)
+        model_kw.update(model_kwargs)
+        enh_kw.update(enh_kwargs)
+        enh_pos_kw.update(enh_pos_kwargs)
+        enh_neg_kw.update(enh_neg_kwargs)
+        bgd_kw.update(bgd_kwargs)
+    
+
+        xco2_variable = "xco2_inter" if interpolated else "xco2"
+        background_variable = "background_inter" if interpolated else "background"
+        enhancements_variable = "enhancement_diff" if interpolated else "enhancement"
+        data = self.predictions[["time", xco2_variable, background_variable, enhancements_variable, "xco2_acos"]]
+        data = data.rename(columns={xco2_variable:"xco2", background_variable:"background", enhancements_variable:"enhancement"})
+        keys = ["background","xco2", "xco2_acos"]
+
+        data = self.mean(data, "month").sort_values("month")
+        xvals =  np.arange(len(data))
+
+        if detrend:
+            for i, key in enumerate(keys):
+                data = detrend_hawaii(data, key, "month")
+                keys[i] = key + "_detrend"
+        
+        bgd_key, xco2_key, acos_key = keys
+        enh_key = "enhancement"
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        if plot_acos:
+            ax.errorbar(xvals, data[acos_key], **acos_kw)
+        #ax.plot(xvals, data.xco2_acos, color=acos_color)
+        ax.errorbar(xvals, data[xco2_key], **model_kw)
+        #ax.plot(xvals, data.xco2, color=model_color, )
+
+        ylim = ax.get_ylim()
+
+        
+        if plot_bgd:
+            ax.plot(xvals, data[bgd_key], **bgd_kw)
+        if plot_enh:
+            xvals_interp = np.linspace(xvals.min(), xvals.max(), 100)
+            bgd_interp=np.interp(xvals_interp, xvals, np.array(data[bgd_key]))
+            xco2_interp=np.interp(xvals_interp, xvals, np.array(data[xco2_key]))
+            enh_interp=np.interp(xvals_interp, xvals, np.array(data[enh_key]))
+            ax.fill_between(xvals_interp, bgd_interp, xco2_interp, where=enh_interp > 0, **enh_kw, **enh_pos_kw)
+            ax.fill_between(xvals_interp, bgd_interp, xco2_interp, where=enh_interp < 0, **enh_kw, **enh_neg_kw)
+
+        ax.set_ylim(*ylim)
+        ax.grid(True)
+        ax.set_xticks(xvals, data.month.values.astype("datetime64[M]"))
+        ax.set_xlabel("Month")
+        ax.set_ylabel("XCO2 [ppm]")
+        ax.set_title("XCO2 prediction (monthly average) - Model vs. ACOS ")
+        ax.legend()
+        
+        return fig, ax
+
+
+    def acos_correlation(
+        self, 
+        ax: plt.Axes = None,
+        mean_over: str = "month",
+        interpolated: bool = True,
+        cmap: str = "jet",
+        color_range: tuple[float, float] = (0,1),
+        plot_diag: bool = True,
+        diag_kwargs = dict(linestyle="dashed", color="grey"),
+        figsize: tuple[int, int] = None,
+        square: bool = False,
+        detrend: bool = False,
+        **kwargs
+        ) -> tuple[plt.Figure, plt.Axes]:
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+
+        detrend_str = ""
+        xco2_variable = "xco2_inter" if interpolated else "xco2"
+        data = self.predictions[["time", xco2_variable, "xco2_acos"]]
+        data = data.rename(columns={xco2_variable:"xco2"})
+        keys = ["xco2", "xco2_acos"]
+        if mean_over is None:
+            mean_over = "time"
+        else:
+            data = self.mean(data, mean_over)
+
+        if detrend:
+            detrend_str = " (detrended)"
+            for i, key in enumerate(keys):
+                data = detrend_hawaii(data, key, mean_over)
+                keys[i] = key + "_detrend"
+        
+        xco2_key, acos_key = keys
+
+        n_months = len(np.unique(data[[mean_over]].values.astype("datetime64[M]")))
+        cmap = cm.get_cmap(cmap)
+        colors = cmap(np.linspace(*color_range, n_months))
+        
+        if mean_over != "month":
+            data.insert(1, "month", data[[mean_over]].values.astype("datetime64[M]"))
+        
+        for month, color in zip(np.unique(data.month), colors):
+            selection = data[data.month == month]
+            ax.scatter(selection[[xco2_key]], selection[acos_key], label=month.astype("datetime64[M]"), color=color, **kwargs)
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        if plot_diag:
+            ax.plot((-1e2,1e3), (-1e2,1e3), **diag_kwargs)
+        ax.axis("scaled")
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        if square:
+            min_val = min([*xlim, *ylim])
+            max_val = max([*xlim, *ylim])
+            ax.set_xlim(min_val, max_val)
+            ax.set_ylim(min_val, max_val)
+
+        ax.set_xlabel(f"Modeled XCO2{detrend_str}[ppm]")
+        ax.set_ylabel(f"ACOS XCO2{detrend_str}[ppm]")
+        ax.set_title(f"Correlation of measured vs. modeled XCO2 \nmonthly mean{detrend_str}")
+        ax.grid()
+        ax.legend()
+        #ax.yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
+        #ax.xaxis.set_major_formatter(FormatStrFormatter('%.1f'))
+
+        return fig, ax
+
+
+def collect_coarse_footprints_and_differences(result_path, start, stop, lon, lat, time=1, time_by: Literal["week", "day"] = "week", boundary=None, coarsen_boundary="pad", interpolated: bool = True):
+    if time_by == "week":
+        time_by = "week"
+        time_coord = "week"
+        isocalendar = True
+        
+    elif time_by == "day":
+        time_by = "dayofyear"
+        time_coord = "dayofyear"
+        isocalendar = False
+    else:
+        raise ValueError(f"time_by value '{time_by}' not acceptable. Choose from: 'week', 'day'")
+    
+    xco2_key = "xco2" if not interpolated else "xco2_inter"
+
+    results = pd.read_pickle(result_path)
+    
+    differences = []
+    sounding_id = []
+    xarrs = []
+    for i, result_row in results.iterrows():
+        differences.append(result_row["xco2_acos"] - result_row[xco2_key])
+        sounding_id.append(i)
+        file = os.path.join(result_row["directory"], "Footprint_total_inter_time.nc")
+        if not os.path.exists(path):
+            continue        
+        xarr = xr.load_dataarray(file)
+        xarr = xarr.expand_dims("sounding").assign_coords(dict(sounding=[i]))
+        xarr = xarr.where((xarr.time >= np.datetime64(start)) * (xarr.time < np.datetime64(stop)), drop=True)
+        if not boundary is None:
+            xarr = xarr.isel(
+                longitude = (xarr.longitude >= boundary[0]) * (xarr.longitude <= boundary[1]),
+                latitude = (xarr.latitude >= boundary[2]) * (xarr.latitude <= boundary[3]) 
+            )
+        if isocalendar:
+            time_values = xarr["time"].dt.isocalendar()
+        else:
+            time_values = xarr["time"].dt
+        xarr = xarr.groupby(getattr(time_values, time_by)).sum()
+        # choice of time       
+        xarr_coarse = xarr.coarsen({"longitude":lon, "latitude":lat, time_coord:time}, boundary=coarsen_boundary).sum()
+        xarrs.append(xarr_coarse)
+    
+    differences  = xr.Dataset(
+        data_vars = dict(
+            differences = (["sounding"], differences)
+        ),
+        coords = dict(
+            sounding = (["sounding"], sounding_id)
+        )
+    )
+    
+    xarr_merged = xr.concat(xarrs, dim="sounding")/100 * 0.044
+    xarr_merged = xarr_merged.where(~np.isnan(xarr_merged), 0).to_dataset(name="footprints")
+    dataset = xarr_merged.merge(differences)
+    return dataset, time_coord
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
-    sens = Sensitivity("/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl")
+    ds2, coord = collect_reduced_footprints(
+        result_path="/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2009/09_unpacked/results.pkl",
+        start="2009-09-01", 
+        stop="2009-10-01",
+        time_by="week",
+        lon=2,
+        lat=5,
+        time=2,
+        boundary=None,
+        coarsen_boundary="trim",  
+    )
+
+
+    #sens = Sensitivity("/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl")
+    # acos_file = "/work/bb1170/RUN/b381737/data/ACOS/acos_LtCO2_"
+    # dirs = ["/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2009/09_unpacked",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2009/10_unpacked",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2009/11_unpacked",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2009/12_unpacked_mp",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2010/01_unpacked_mp",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2010/02_unpacked_mp",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2010/03_unpacked_mp",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2010/04_unpacked",
+    #     "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2010/05_unpacked"]
+
+    # res = Results(dirs)
+    # res.acos_correlation()
