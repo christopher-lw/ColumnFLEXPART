@@ -45,6 +45,7 @@ if __name__ == '__main__':
     backgrounds_inter = []
     xco2s = []
     xco2s_inter = []
+    xco2s_acos = []
     directories = []
 
     for dir in tqdm(files):
@@ -75,9 +76,12 @@ if __name__ == '__main__':
 
             xco2_inter = fd.total(ct_file=args.flux_file, allow_read=args.read_only, boundary=args.boundary, chunks=dict(time=20, pointspec=4), interpolate=True)
             xco2 = fd.total(ct_file=args.flux_file, allow_read=args.read_only, boundary=args.boundary, chunks=dict(time=20, pointspec=4), interpolate=False)
+            xco2_acos = float(fd.sounding.xco2)
 
             _ = fd.footprint.total()
             _ = fd.footprint.total(interpolate=False)
+
+            
 
             times.append(fd.release["start"])
             enhancements.append(enhancement)
@@ -86,6 +90,7 @@ if __name__ == '__main__':
             backgrounds_inter.append(background_inter)
             xco2s.append(xco2)
             xco2s_inter.append(xco2_inter)
+            xco2s_acos.append(xco2_acos)
             enhancements_diff.append(xco2_inter-background_inter)
             directories.append(fd._dir)
         except Exception as e:
@@ -101,5 +106,6 @@ if __name__ == '__main__':
             background=backgrounds, 
             background_inter = backgrounds_inter, 
             xco2=xco2s,
-            xco2_inter=xco2s_inter))
+            xco2_inter=xco2s_inter,
+            xco2_acos=xco2s_acos))
     dataframe.to_pickle(os.path.join(args.dir, args.out_name))
