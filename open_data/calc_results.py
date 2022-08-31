@@ -46,7 +46,11 @@ if __name__ == '__main__':
     xco2s = []
     xco2s_inter = []
     xco2s_acos = []
+    xco2s_acos = []
     directories = []
+    acos_files  = []
+    acos_sounding_ids = []
+    acos_uncertainties = []
 
     for dir in tqdm(files):
         if not "trajectories.pkl" in os.listdir(dir):
@@ -93,6 +97,9 @@ if __name__ == '__main__':
             xco2s_acos.append(xco2_acos)
             enhancements_diff.append(xco2_inter-background_inter)
             directories.append(fd._dir)
+            acos_files.append(fd.sounding_path)
+            acos_sounding_ids.append(fd.sounding_id)
+            acos_uncertainties.append(float(fd.sounding.xco2_uncertainty))
         except Exception as e:
             print(e)
             continue
@@ -107,5 +114,9 @@ if __name__ == '__main__':
             background_inter = backgrounds_inter, 
             xco2=xco2s,
             xco2_inter=xco2s_inter,
-            xco2_acos=xco2s_acos))
+            xco2_acos=xco2s_acos,
+            acos_sounding_id=acos_sounding_ids,
+            acos_file=acos_files,
+            acos_uncertainty=acos_uncertainties
+            ))
     dataframe.to_pickle(os.path.join(args.dir, args.out_name))
