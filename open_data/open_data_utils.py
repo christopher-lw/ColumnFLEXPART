@@ -4,7 +4,7 @@ import os
 from datetime import date, datetime
 from functools import cache
 from pathlib import Path
-from typing import Union
+from typing import Union, Optional
 
 import cartopy
 import cartopy.crs as ccrs
@@ -19,6 +19,7 @@ from matplotlib.colors import LogNorm
 from shapely.geometry import Polygon
 from typing import Iterable, Any
 from copy import deepcopy
+import warnings
 
 # import geoplot
 # import contextily as ctx
@@ -218,7 +219,6 @@ def combine_flux_and_footprint(
         flux = flux.chunk(chunks=chunks)
     with dask.config.set(**{"array.slicing.split_large_chunks": True}):
         fp_co2 = xr.merge([footprint, flux])
-    fp_co2 = fp_co2.persist()
     # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
     fp_co2 = (
         1 / 100 * fp_co2.total_flux * fp_co2.spec001_mr * 0.044
@@ -272,11 +272,13 @@ def load_nc_partposit(dir_path: str, chunks: dict = None) -> xr.Dataset:
 
 class FlexDataset2:
     def __init__(self, directory: str, **kwargs):
-        nc_path = self.get_nc_path(directory)
-        self._nc_path = nc_path
-        self._dir = nc_path.rsplit("/", 1)[0]
-        self.sounding = None
-        self._kwargs = dict(
+        nc_path: str = self.get_nc_path(directory)
+        self._nc_path: str = nc_path
+        self._dir: str = nc_path.rsplit("/", 1)[0]
+        self.sounding: Optional[xr.Dataset] = None
+        self.sounding_path: Optional[str] = None
+        self.sounding_id: Optional[int] = None
+        self._kwargs: dict = dict(
             extent=[-180, 180, -90, 90],
             ct_dir=None,
             ct_name_dummy=None,
@@ -304,24 +306,24 @@ class FlexDataset2:
             ]
         ]
 
-        self.footprint = self.Footprint(self)
+        self.footprint: self.Footprint = self.Footprint(self)
+        self.trajectories: Optional[self.Trajectory] = None
         if os.path.exists(os.path.join(self._dir, "trajectories.pkl")):
             self.trajectories = self.Trajectories(self)
         else:
-            print("No trajectory information found.")
-            self.trajectories = None
+            warnings.warn("No trajectory information found.")
         self.start, self.stop, self.release = self.get_metadata()
-        self._background = None
-        self._background_layer = None
-        self._background_inter = None
-        self._enhancement = None
-        self._enhancement_layer = None
-        self._enhancement_inter = None
-        self._total = None
-        self._total_layer = None
-        self._total_inter = None
+        self._background: Optional[float] = None
+        self._background_layer: Optional[list[float]] = None
+        self._background_inter: Optional[float] = None
+        self._enhancement: Optional[float] = None
+        self._enhancement_layer: Optional[list[float]] = None
+        self._enhancement_inter: Optional[float] = None
+        self._total: Optional[float] = None
+        self._total_layer: Optional[list[float]] = None
+        self._total_inter: Optional[float] = None
         
-        self._last_boundary = None
+        self._last_boundary: Optional[list[float]] = None
 
     def get_nc_path(self, directory: str) -> str:
         nc_file = None
@@ -823,11 +825,15 @@ class FlexDataset2:
                 f"Could not find matching ACOS file for date {sounding_date}"
             )
         acos_data = xr.load_dataset(file_path)
+        
         # return acos_data.time, sounding_datetime
         acos_data = acos_data.isel(
             sounding_id=acos_data.time.values.astype("datetime64[s]")
             == sounding_datetime.astype("datetime64[s]")
         )
+
+        self.sounding_path = file_path
+        self.sounding_id = int(acos_data.sounding_id)
         self.sounding = acos_data
         return self.sounding
 
