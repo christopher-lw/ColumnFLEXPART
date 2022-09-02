@@ -1,10 +1,12 @@
+from abc import ABC, abstractmethod
+from ast import Not
 from dataclasses import dataclass
 import json
 import os
 from datetime import date, datetime
 from functools import cache
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, Literal
 
 import cartopy
 import cartopy.crs as ccrs
@@ -20,6 +22,8 @@ from shapely.geometry import Polygon
 from typing import Iterable, Any
 from copy import deepcopy
 import warnings
+from timezonefinder import TimezoneFinder
+import pytz
 
 # import geoplot
 # import contextily as ctx
@@ -269,15 +273,253 @@ def load_nc_partposit(dir_path: str, chunks: dict = None) -> xr.Dataset:
     xarr = xr.open_mfdataset(files, chunks=chunks)
     return xarr
 
+class ColumnMeasurement(ABC):
+    """Class to load, hold and use column measurement data such as ACOS or TCCON data to work with flexpart output."""
+    def __init__(self, path: Union[Path, str], time: datetime):
+        self.data, self.path, self.id = self.load(path, time)
+
+    @abstractmethod
+    def surface_pressure(self) -> float:
+        """Return surface pressure"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def load(self, path: Union[Path, str], time) -> tuple[xr.Dataset, Path, int]:
+        """Loads data of measurement"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def interpolate_to_levels(self, dataarray: xr.DataArray, pressure_key: str, pressure_values: Iterable) -> xr.DataArray:
+        """Interpolates given DataArray to levels of measurement data"""
+        raise NotImplementedError
+    
+    @abstractmethod
+    def add_variables(self, dataarray: xr.DataArray, variables: list[str]) -> xr.Dataset:
+        """Creates Dataset from dataarray and dataarrays of mesurements named in variables"""
+        raise NotImplementedError
+    
+    @abstractmethod
+    def pressure_weighted_sum(self, dataset: xr.Dataset, data_var: str, with_averaging_kernel:bool) -> xr.DataArray:
+        """Carries out pressure weighted sum with additional option to use averaging kernel"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def surface_temperature(self) -> float:
+        """Retrun surface temperature"""
+
+
+class TcconMeasurement(ColumnMeasurement):
+    """Class to load, hold and use ACOS data to work with flexpart output. More information on how to treat data is found here: https://tccon-wiki.caltech.edu/Main/AuxilaryData#A_Priori_Profiles_and_Column_Averaging_Kernels_for_the_40obsolete_41_GGG2009_Data"""
+    def __init__(self, path: Union[Path, str], time: datetime):
+        super(TcconMeasurement, self).__init__(path, time)
+    
+    @staticmethod
+    def get_times(tccon_data: xr.Dataset) -> "np.ndarray[np.datetime64]":
+        """Transfers year day and time information and combines them to np.datetime64 obejcts"""
+        dates = tccon_data.year.values.astype("int").astype("str").astype("datetime64") +\
+            (tccon_data.day - 1).values.astype("timedelta64[D]")+\
+            np.round(tccon_data.hour.values*3600).astype("timedelta64[s]")
+        return dates
+        
+    @staticmethod
+    def get_prior_times(tccon_data: xr.Dataset) -> pd.DatetimeIndex:   
+        """Reads out time values for year, month and day and combines them to np.datetime64 object. Adds 12 hour for timestamp to be in the middle of the day and transfers it to utc."""
+        prior_times = tccon_data.prior_year.values.astype("int").astype("str").astype("datetime64") +\
+            (tccon_data.prior_month - 1).astype("timedelta64[M]") +\
+            (tccon_data.prior_day - 1).astype("timedelta64[D]")+\
+            np.timedelta64(12, "h")
+
+        tf = TimezoneFinder()
+        timezone_name = tf.timezone_at(lng=tccon_data.long_deg.values[0], lat=tccon_data.lat_deg.values[0])
+        timezone = pytz.timezone(timezone_name)
+
+        prior_times = [timezone.localize(pd.to_datetime(t)).astimezone(pytz.utc) for t in prior_times.values]
+        prior_times = pd.DatetimeIndex(prior_times).tz_localize(None)
+        return prior_times
+
+    def load(self, path: Union[Path, str], time: datetime) -> xr.Dataset:
+        path = Path(path)
+        # Selecting needed variables
+        variables = [
+            "long_deg", "lat_deg", "year", "day", "hour", 
+            "xco2_ppm_error", "xco2_ppm", "ak_co2", "prior_co2", 
+            "prior_year", "prior_month", "prior_day", "asza_deg", 
+            "pout_hPa", "tout_C", "prior_h2o", "prior_Pressure"
+            ]
+        data: xr.Dataset = xr.load_dataset(path, decode_times=False)[variables]
+        data = data.isel(time = data.year == time.year)
+        # Adjusting time coordinates to times instead of indices 
+        times = self.get_times(data)
+        prior_times = self.get_prior_times(data)
+        data = data.assign_coords(time=times, prior_date=prior_times)
+        # Adjust moist to dry air apriori:
+        data  = data.assign(prior_co2 = data.prior_co2/(1 - data.prior_h2o))
+        # Drop now unnecessary data
+        data = data.drop(["year", "day", "hour", "prior_year", "prior_month", "prior_day", "prior_h2o"])
+        # Get data for needed time
+        time = np.datetime64(time)
+        data = data.interp(time=[time])
+        data = data.interp(ak_zenith=[float(data.asza_deg)])
+        data = data.isel(prior_date=np.argmin(np.abs(time - data.prior_date.values)))
+        # Interpolate averaging kernel to prior levels 
+        data = data.interp(ak_P_hPa = data.prior_Pressure.values, kwargs = dict(fill_value="extrapolate"))
+        # Replacing old coordinate
+        averaging_kernel = data.ak_co2.interp(
+            ak_P_hPa = data.prior_Pressure.values).assign_coords(
+                ak_P_hPa = data.prior_Height.values).rename(
+                    ak_P_hPa = "prior_Height")
+        data = (data.drop("ak_co2").drop_dims("ak_P_hPa")).merge(averaging_kernel.to_dataset())
+        #renaming for consistency
+        data = data.rename(xco2_ppm = "xco2", xco2_ppm_error = "xco2_uncertainty")
+        return data.squeeze(drop=True), path, None
+    
+    def interpolate_to_levels(self, dataarray: xr.DataArray, pressure_key: str, pressure_values: Iterable) -> xr.DataArray:
+        """Interpolates given DataArray to levels of measurement data"""
+        dataarray = dataarray.assign_coords({pressure_key: pressure_values}).rename({pressure_key: "pressure"})
+        tccon_pressures = self.data["prior_Pressure"]
+        within_sounding_range = (tccon_pressures > dataarray.pressure.values.min()) & (tccon_pressures < dataarray.pressure.values.max())
+        #get respective level information
+        tccon_pressures = tccon_pressures.values[within_sounding_range]
+        tccon_levels = self.data["prior_Height"].values[within_sounding_range]
+        #interpolation to tccon levels
+        dataarray = dataarray.interp(pressure=tccon_pressures)
+        #assign levels to pressures
+        dataarray = dataarray.assign_coords({"pressure": tccon_levels}).rename({"pressure": "prior_Height"})
+        dataarray = dataarray.compute()
+        return dataarray.squeeze(drop=True)
+
+    def add_variables(
+        self, 
+        dataarray: xr.DataArray, 
+        variables: list[str] = ["prior_Pressure", "ak_co2", "prior_co2"]
+    ) -> xr.Dataset:
+        """Creates Dataset from dataarray and dataarrays of mesurements named in variables"""
+        tccon_variable_data = [self.data[var].squeeze(drop=True) for var in variables]
+        dataset = xr.merge([dataarray.squeeze(drop=True), *tccon_variable_data])
+        return dataset
+    
+    def pressure_weighted_sum(self, dataset: xr.Dataset, data_var: str, with_averaging_kernel:bool) -> xr.DataArray:
+        """Carries out pressure weighted sum with additional option to use averaging kernel"""
+        dataarray = dataset[data_var]
+        if with_averaging_kernel: 
+            averaging_kernel = self.data.ak_co2
+            not_levels = [k for k in dataarray.dims if k != "prior_Height"]
+            no_data = np.isnan(dataarray).prod(not_levels).values.astype(bool)
+            dataarray[no_data] = 0
+            # set values of averaging kernel to 0 for these values (only use prior here)
+            averaging_kernel = xr.where(no_data, 0, averaging_kernel)
+            dataset = dataset.drop("ak_co2")
+            averaging_kernel = averaging_kernel.assign_coords()
+            dataset = dataset.assign(dict(ak_co2 = averaging_kernel))
+            dataarray = dataarray * dataset.ak_co2 + dataset.prior_co2 * (1 - dataset.ak_co2)
+        pressure_weights = (dataset.prior_Pressure.values - np.pad(dataset.prior_Pressure.values, (0, 1), "constant")[1:])/self.surface_pressure()
+        pressure_weights = xr.DataArray(pressure_weights, dict(prior_Height = dataset.prior_Height.values))
+        pw_dataarray = dataarray * pressure_weights
+        result = pw_dataarray.sum(dim = "prior_Height")
+        return result
+        
+    def surface_pressure(self) -> float:
+        """Return surface pressure"""
+        return float(self.data.pout_hPa)
+    
+    def surface_temperature(self) -> float:
+        """Retrun surface temperature"""
+        return float(self.data.tout_C) + 273.15
+
+
+
+
+class AcosMeasurement(ColumnMeasurement):
+    """Class to load, hold and use ACOS data to work with flexpart output."""
+    def __init__(self, path: Union[Path, str], time: datetime):
+        super(AcosMeasurement, self).__init__(path, time)
+
+    def load(self, path: Union[Path, str], time: datetime) -> xr.Dataset:
+        path = Path(path)
+        sounding_datetime = np.datetime64(time)
+        sounding_date, _ = datetime64_to_yyyymmdd_and_hhmmss(sounding_datetime)
+        sounding_date = sounding_date[2:]
+        file_path = None
+        for file in path.parent.iterdir():
+            if path.name + sounding_date in file.name:
+                file_path = file
+        if file_path is None:
+            raise FileNotFoundError(
+                f"Could not find matching ACOS file for date {sounding_date}"
+            )
+        acos_data = xr.load_dataset(file_path)
+        # return acos_data.time, sounding_datetime
+        acos_data = acos_data.isel(
+            sounding_id=acos_data.time.values.astype("datetime64[s]") == sounding_datetime.astype("datetime64[s]")
+        )
+        sounding_id = int(acos_data.sounding_id)
+        return acos_data, file_path, sounding_id
+
+    def surface_pressure(self) -> float:
+        return float(self.data.pressure_levels.values[0,-1])
+    
+    def interpolate_to_levels(
+        self, 
+        dataarray: xr.DataArray, 
+        pressure_key: str, 
+        pressure_values: Iterable,
+    ) -> xr.DataArray:
+        dataarray = dataarray.assign_coords({pressure_key: pressure_values}).rename({pressure_key: "pressure"})
+        pressure_sounding = self.data.pressure_levels.values[0]
+        #find possible levels to interpolate to
+        within_sounding_range = (pressure_sounding > dataarray.pressure.values.min()) & (pressure_sounding < dataarray.pressure.values.max())
+        #get respective level information
+        pressure_sounding = pressure_sounding[within_sounding_range]
+        levels_sounding= self.data.levels.values[within_sounding_range]
+        #interpolation to acos levels
+        dataarray = dataarray.interp(pressure=pressure_sounding)
+        #assign levels to pressures
+        dataarray = dataarray.assign_coords({"pressure": levels_sounding}).rename({"pressure": "levels"})
+        dataarray = dataarray.compute()
+        return dataarray.squeeze(drop=True)
+
+    def add_variables(
+        self,
+        dataarray: xr.DataArray, 
+        variables: list[str]= ["pressure_weight", "xco2_averaging_kernel", "co2_profile_apriori"]
+    ) -> xr.Dataset:
+        acos_variable_data = [self.data[var].squeeze(drop=True) for var in variables]
+        dataset = xr.merge([dataarray.squeeze(drop=True), *acos_variable_data])
+        return dataset
+    
+    def pressure_weighted_sum(
+        self,
+        dataset: xr.Dataset, 
+        data_var: str, 
+        with_averaging_kernel: bool
+    ) -> xr.DataArray:
+        dataarray = dataset[data_var]
+        if with_averaging_kernel:
+            averaging_kernel = dataset.xco2_averaging_kernel
+            # get levels at which there is no data (filled up with nans)
+            not_levels = [k for k in dataarray.coords.keys() if k != "levels"]
+            no_data = np.isnan(dataarray).prod(not_levels).values.astype(bool)
+            dataarray[no_data] = 0
+            # set values of averaging kernel to 0 for these values (only use prior here)
+            averaging_kernel = xr.where(no_data, 0, averaging_kernel)
+            dataset = dataset.drop("xco2_averaging_kernel")
+            dataset = dataset.assign(dict(xco2_averaging_kernel = averaging_kernel))
+            dataarray = dataarray * dataset.xco2_averaging_kernel + dataset.co2_profile_apriori * (1 - dataset.xco2_averaging_kernel)
+        pw_dataarray = dataarray * dataset.pressure_weight
+        result = pw_dataarray.sum(dim = "levels")
+        return result
+
+    def surface_pressure(self) -> float:
+        return self.data.pressure_levels.values[0,-1]
+    
+    def surface_temperature(self) -> float:
+        return 22 + 273.15
 
 class FlexDataset2:
     def __init__(self, directory: str, **kwargs):
         nc_path: str = self.get_nc_path(directory)
         self._nc_path: str = nc_path
         self._dir: str = nc_path.rsplit("/", 1)[0]
-        self.sounding: Optional[xr.Dataset] = None
-        self.sounding_path: Optional[str] = None
-        self.sounding_id: Optional[int] = None
         self._kwargs: dict = dict(
             extent=[-180, 180, -90, 90],
             ct_dir=None,
@@ -312,6 +554,7 @@ class FlexDataset2:
             self.trajectories = self.Trajectories(self)
         else:
             warnings.warn("No trajectory information found.")
+        self.measurement: Optional[ColumnMeasurement] = None
         self.start, self.stop, self.release = self.get_metadata()
         self._background: Optional[float] = None
         self._background_layer: Optional[list[float]] = None
@@ -589,10 +832,10 @@ class FlexDataset2:
                 self._total_inter = self.load_result("total_inter", boundary)
             elif mode == "calculate":
                 total_layer = self.to_pointspec_dataarray(total_layer, "total_layer")
-                pressures = self.sounding.pressure_levels.values[0,-1] * self.pressure_factor(self.release["heights"], Tb=273.15 + 22)
-                total_layer = self.interpolate_to_acos_levels(total_layer, "pointspec", pressures, self.sounding)
-                total_layer = self.add_acos_variables(total_layer, self.sounding)
-                self._total_inter = self.pressure_weighted_sum(total_layer, "total_layer", with_averaging_kernel = True).values
+                pressures = self.measurement.surface_pressure() * self.pressure_factor(self.release["heights"], Tb=self.measurement.surface_temperature())
+                total_layer = self.measurement.interpolate_to_levels(total_layer, "pointspec", pressures)
+                total_layer = self.measurement.add_variables(total_layer)
+                self._total_inter = self.measurement.pressure_weighted_sum(total_layer, "total_layer", with_averaging_kernel = True).values
                 self._total_inter = float(self._total_inter)
                 self.save_result("total_inter", self._total_inter, boundary)
             return self._total_inter
@@ -637,10 +880,10 @@ class FlexDataset2:
                 self._enhancement_inter = self.load_result("enhancement_inter", boundary)
             elif mode == "calculate":    
                 molefractions = self.to_pointspec_dataarray(molefractions, "enhancement_layer")
-                pressures = self.sounding.pressure_levels.values[0,-1] * self.pressure_factor(self.release["heights"], Tb=273.15 + 22)
-                molefractions = self.interpolate_to_acos_levels(molefractions, "pointspec", pressures, self.sounding)
-                molefractions = self.add_acos_variables(molefractions, self.sounding)
-                self._enhancement_inter = self.pressure_weighted_sum(molefractions, "enhancement_layer", with_averaging_kernel = False).values
+                pressures = self.measurement.surface_pressure() * self.pressure_factor(self.release["heights"], Tb=self.measurement.surface_temperature())
+                molefractions = self.measurement.interpolate_to_levels(molefractions, "pointspec", pressures)
+                molefractions = self.measurement.add_variables(molefractions)
+                self._enhancement_inter = self.measurement.pressure_weighted_sum(molefractions, "enhancement_layer", with_averaging_kernel = False).values
                 self._enhancement_inter = float(self._enhancement_inter)
                 self.save_result("enhancement_inter", self._enhancement_inter, boundary)
             return self._enhancement_inter
@@ -682,10 +925,10 @@ class FlexDataset2:
                 self._background_inter = self.load_result("background_inter", boundary)
             elif mode == "calculate":
                 co2_means = self.to_pointspec_dataarray(co2_means, "background_layer")
-                pressures = self.sounding.pressure_levels.values[0,-1] * self.pressure_factor(self.release["heights"], Tb=273.15 + 22)
-                co2_means = self.interpolate_to_acos_levels(co2_means, "pointspec", pressures, self.sounding)
-                co2_means = self.add_acos_variables(co2_means, self.sounding)
-                self._background_inter = self.pressure_weighted_sum(co2_means, "background_layer", with_averaging_kernel=True).values
+                pressures = self.measurement.surface_pressure() * self.pressure_factor(self.release["heights"], Tb=self.measurement.surface_temperature())
+                co2_means = self.measurement.interpolate_to_levels(co2_means, "pointspec", pressures)
+                co2_means = self.measurement.add_variables(co2_means)
+                self._background_inter = self.measurement.pressure_weighted_sum(co2_means, "background_layer", with_averaging_kernel=True).values
                 self._background_inter = float(self._background_inter)
                 self.save_result("background_inter", self._background_inter, boundary)
             return self._background_inter
@@ -701,52 +944,6 @@ class FlexDataset2:
                 self._background = (co2_means * pressure_weights).sum()
                 self.save_result("background", self._background, boundary)
             return self._background
-
-    @staticmethod
-    def interpolate_to_acos_levels(dataarray: xr.DataArray, pressure_key: str, pressure_values: Iterable, acos_data: xr.Dataset) -> xr.DataArray:
-        dataarray = dataarray.assign_coords({pressure_key: pressure_values}).rename({pressure_key: "pressure"})
-        pressure_sounding = acos_data.pressure_levels.values[0]
-        #find possible levels to interpolate to
-        within_sounding_range = (pressure_sounding > dataarray.pressure.values.min()) & (pressure_sounding < dataarray.pressure.values.max())
-        #get respective level information
-        pressure_sounding = pressure_sounding[within_sounding_range]
-        levels_sounding= acos_data.levels.values[within_sounding_range]
-        #interpolation to acos levels
-        dataarray = dataarray.interp(pressure=pressure_sounding)
-        #assign levels to pressures
-        dataarray = dataarray.assign_coords({"pressure": levels_sounding}).rename({"pressure": "levels"})
-        dataarray = dataarray.compute()
-        return dataarray.squeeze(drop=True)
-
-    @staticmethod
-    def add_acos_variables(
-        dataarray: xr.DataArray, 
-        acos_data: xr.Dataset, 
-        variables: list[str]= ["pressure_weight", "xco2_averaging_kernel", "co2_profile_apriori"]
-    ) -> xr.Dataset:
-
-        acos_variable_data = [acos_data[var].squeeze(drop=True) for var in variables]
-        dataset = xr.merge([dataarray.squeeze(drop=True), *acos_variable_data])
-        return dataset
-    
-    @staticmethod
-    def pressure_weighted_sum(dataset: xr.Dataset, data_var: str, with_averaging_kernel: bool = True) -> xr.DataArray:
-        dataarray = dataset[data_var]
-        if with_averaging_kernel:
-            averaging_kernel = dataset.xco2_averaging_kernel
-            # get levels at which there is no data (filled up with nans)
-            not_levels = [k for k in dataarray.coords.keys() if k != "levels"]
-            no_data = np.isnan(dataarray).prod(not_levels).values.astype(bool)
-            dataarray[no_data] = 0
-            # set values of averaging kernel to 0 for these values (only use prior here)
-            averaging_kernel = xr.where(no_data, 0, averaging_kernel)
-            dataset = dataset.drop("xco2_averaging_kernel")
-            dataset = dataset.assign(dict(xco2_averaging_kernel = averaging_kernel))
-            
-            dataarray = dataarray * dataset.xco2_averaging_kernel + dataset.co2_profile_apriori * (1 - dataset.xco2_averaging_kernel)
-        pw_dataarray = dataarray * dataset.pressure_weight
-        result = pw_dataarray.sum(dim = "levels")
-        return result
 
     def load_result(
         self, name: str, boundary: list[float, float, float, float] = None
@@ -799,44 +996,25 @@ class FlexDataset2:
         self._total_layer = None
         self._total_inter = None
 
-    # def get_pressures(self, heights, lon, lat):
-    #     pressures = self.pressure_factor(heights)
-    #     return pressures
-
-    def load_sounding(self, path: Union[Path, str]) -> xr.Dataset:
-        """Loads acos sounding of FLEXPART run
+    def load_measurement(self, path: Union[Path, str], measurement_type: Literal["ACOS", "TCCON"]) -> xr.Dataset:
+        """Loads column measurement of FLEXPART run
 
         Args:
             path (Union[Path, str]): Path of Acos file unitl timestamp. E.g.: '/path/to/acos/folder/acos_LtCO2_'
+            measurement_type (Literal["ACOS", "TCCON"]): Type of measurement to be loaded.
 
         Returns:
-            xr.Dataset: part of loaded file containing the exact sounding
+            xr.Dataset: Dataof loadaed measurement. 
         """
-        path = Path(path)
-        sounding_datetime = np.datetime64(self.release["start"])
-        sounding_date, _ = datetime64_to_yyyymmdd_and_hhmmss(sounding_datetime)
-        sounding_date = sounding_date[2:]
-        file_path = None
-        for file in path.parent.iterdir():
-            if path.name + sounding_date in file.name:
-                file_path = file
-        if file_path is None:
-            raise FileNotFoundError(
-                f"Could not find matching ACOS file for date {sounding_date}"
-            )
-        acos_data = xr.load_dataset(file_path)
-        
-        # return acos_data.time, sounding_datetime
-        acos_data = acos_data.isel(
-            sounding_id=acos_data.time.values.astype("datetime64[s]")
-            == sounding_datetime.astype("datetime64[s]")
-        )
-
-        self.sounding_path = file_path
-        self.sounding_id = int(acos_data.sounding_id)
-        self.sounding = acos_data
-        return self.sounding
-
+        if measurement_type == "ACOS":
+            measurement = AcosMeasurement
+        elif measurement_type == "TCCON":
+            measurement = TcconMeasurement
+        else:
+            raise ValueError(f"Possible values for measurement_type are: ['ACOS', 'TCCON'] not {measurement_type}")
+        self.measurement = measurement(path = path, time = self.release["start"])
+        return self.measurement.data
+    
     def get_pressures(self, heights, lon, lat):
         pressures = self.pressure_factor(heights)
         return pressures
@@ -903,13 +1081,13 @@ class FlexDataset2:
         def calc_total(self, interpolate: bool = True):
             """Calculates total Footprints"""
             if interpolate:
-                if self._outer.sounding is None:
-                    raise ValueError("Cannot calculate total footprint with interpolation without sounding data. To interpolate first use FlexDataset2.load_sounding(). To just calculate sum over heights set interpolate=False")
+                if self._outer.measurement is None:
+                    raise ValueError("Cannot calculate total footprint with interpolation without measurement data. To interpolate first use FlexDataset2.load_measurement(). To just calculate sum over heights set interpolate=False")
                 self._total_inter = None
-                pressures = self._outer.sounding.pressure_levels.values[0,-1] * self._outer.pressure_factor(self._outer.release["heights"], Tb=273.15 + 22)
-                total = self._outer.interpolate_to_acos_levels(self.dataarray, "pointspec", pressures, self._outer.sounding)
-                total = self._outer.add_acos_variables(total, self._outer.sounding, ["pressure_weight"])
-                self._total_inter_time = self._outer.pressure_weighted_sum(total, self.datakey, with_averaging_kernel=False).compute()
+                pressures = self._outer.measurement.surface_pressure() * self._outer.pressure_factor(self._outer.release["heights"], Tb=self._outer.measurement.surface_temperature())
+                total = self._outer.measurement.interpolate_to_levels(self.dataarray, "pointspec", pressures)
+                total = self._outer.measurement.add_variables(total)
+                self._total_inter_time = self._outer.measurement.pressure_weighted_sum(total, self.datakey, with_averaging_kernel=False).compute()
                 self._total_inter = self._total_inter_time.sum("time")
                 return self._total_inter
 

@@ -411,8 +411,8 @@ class ResultsConcentrations():
         ax: plt.Axes = None,
         interpolated: bool = True,
         ignore_defaults: bool = False,
-        plot_acos: bool = True,
-        acos_kwargs: dict = dict(),
+        plot_measurement: bool = True,
+        measurement_kwargs: dict = dict(),
         model_kwargs: dict = dict(),
         plot_enh: bool = True,
         enh_kwargs: dict = dict(),
@@ -423,14 +423,14 @@ class ResultsConcentrations():
         figsize: tuple[int, int] = (7,5),
         detrend: bool = False,
         ) -> tuple[plt.Figure, plt.Axes]:
-        """PLots monthly average of xco2 prediction in comparison to acos data. 
+        """PLots monthly average of xco2 prediction in comparison to measurement data. 
 
         Args:
             ax (plt.Axes, optional): Axes to plot on. Defaults to None.
             interpolated (bool, optional): Wheter or not to use interpolated values (with averaging kernel). Defaults to True.
             ignore_defaults (bool, optional): Whether only kwargs set by user are to be used. Defaults to False.
-            plot_acos (bool, optional): Whether to plot acos dataframe. Defaults to True.
-            acos_kwargs (dict, optional): Kwargs of acos errorbar plot. Defaults to dict().
+            plot_measurement (bool, optional): Whether to plot measurement dataframe. Defaults to True.
+            measurement_kwargs (dict, optional): Kwargs of measurement errorbar plot. Defaults to dict().
             model_kwargs (dict, optional): Kwargs of modeled xco2 values. Defaults to dict().
             plot_enh (bool, optional): Wether to plot enhancement data (fill_between). Defaults to True.
             enh_kwargs (dict, optional): Kwargs to use in both fill_between plots. Defaults to dict().
@@ -445,14 +445,14 @@ class ResultsConcentrations():
         """        
     
         
-        acos_kw = dict()
+        measurement_kw = dict()
         model_kw = dict()
         enh_kw = dict()
         enh_pos_kw = dict()
         enh_neg_kw = dict()
         bgd_kw = dict()
 
-        acos_defaults = dict(fmt="o", linestyle="-", color="firebrick", label="ACOS") 
+        measurement_defaults = dict(fmt="o", linestyle="-", color="firebrick", label="measurement") 
         model_defaults = dict(fmt="o", linestyle="-", color="black", label="Model")
         enh_defaults = dict(alpha=0.2)
         enh_pos_defaults = dict(color="green", label="positive_enhancement")
@@ -460,14 +460,14 @@ class ResultsConcentrations():
         bgd_defaults = dict(color="black", linestyle="dashed", linewidth=1, label="Model background")
 
         if not ignore_defaults:
-            acos_kw.update(acos_defaults)
+            measurement_kw.update(measurement_defaults)
             model_kw.update(model_defaults)
             enh_kw.update(enh_defaults)
             enh_pos_kw.update(enh_pos_defaults)
             enh_neg_kw.update(enh_neg_defaults)
             bgd_kw.update(bgd_defaults)
 
-        acos_kw.update(acos_kwargs)
+        measurement_kw.update(measurement_kwargs)
         model_kw.update(model_kwargs)
         enh_kw.update(enh_kwargs)
         enh_pos_kw.update(enh_pos_kwargs)
@@ -478,9 +478,9 @@ class ResultsConcentrations():
         xco2_variable = "xco2_inter" if interpolated else "xco2"
         background_variable = "background_inter" if interpolated else "background"
         enhancements_variable = "enhancement_diff" if interpolated else "enhancement"
-        data = self.predictions[["time", xco2_variable, background_variable, enhancements_variable, "xco2_acos"]]
+        data = self.predictions[["time", xco2_variable, background_variable, enhancements_variable, "xco2_measurement"]]
         data = data.rename(columns={xco2_variable:"xco2", background_variable:"background", enhancements_variable:"enhancement"})
-        keys = ["background","xco2", "xco2_acos"]
+        keys = ["background","xco2", "xco2_measurement"]
 
         data = self.mean(data, "month").sort_values("month")
         xvals =  np.arange(len(data))
@@ -490,20 +490,20 @@ class ResultsConcentrations():
                 data = detrend_hawaii(data, key, "month")
                 keys[i] = key + "_detrend"
         
-        bgd_key, xco2_key, acos_key = keys
+        bgd_key, xco2_key, measurement_key = keys
         enh_key = "enhancement"
 
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
         else:
             fig = ax.get_figure()
-        if plot_acos:
-            ax.errorbar(xvals, data[acos_key], **acos_kw)
-        #ax.plot(xvals, data.xco2_acos, color=acos_color)
+        if plot_measurement:
+            ax.errorbar(xvals, data[measurement_key], **measurement_kw)
+        #ax.plot(xvals, data.xco2_measurement, color=measurement_color)
         ax.errorbar(xvals, data[xco2_key], **model_kw)
         #ax.plot(xvals, data.xco2, color=model_color, )
 
-        ylim = ax.get_ylim()
+        #ylim = ax.get_ylim()
 
         
         if plot_bgd:
@@ -516,18 +516,18 @@ class ResultsConcentrations():
             ax.fill_between(xvals_interp, bgd_interp, xco2_interp, where=enh_interp > 0, **enh_kw, **enh_pos_kw)
             ax.fill_between(xvals_interp, bgd_interp, xco2_interp, where=enh_interp < 0, **enh_kw, **enh_neg_kw)
 
-        ax.set_ylim(*ylim)
+        #ax.set_ylim(*ylim)
         ax.grid(True)
         ax.set_xticks(xvals, data.month.values.astype("datetime64[M]"))
         ax.set_xlabel("Month")
         ax.set_ylabel("XCO2 [ppm]")
-        ax.set_title("XCO2 prediction (monthly average) - Model vs. ACOS ")
+        ax.set_title("XCO2 prediction (monthly average) - Model vs. measurement ")
         ax.legend()
         
         return fig, ax
 
 
-    def acos_correlation(
+    def measurement_correlation(
         self, 
         ax: plt.Axes = None,
         mean_over: str = "month",
@@ -549,9 +549,9 @@ class ResultsConcentrations():
 
         detrend_str = ""
         xco2_variable = "xco2_inter" if interpolated else "xco2"
-        data = self.predictions[["time", xco2_variable, "xco2_acos"]]
+        data = self.predictions[["time", xco2_variable, "xco2_measurement"]]
         data = data.rename(columns={xco2_variable:"xco2"})
-        keys = ["xco2", "xco2_acos"]
+        keys = ["xco2", "xco2_measurement"]
         if mean_over is None:
             mean_over = "time"
         else:
@@ -563,7 +563,7 @@ class ResultsConcentrations():
                 data = detrend_hawaii(data, key, mean_over)
                 keys[i] = key + "_detrend"
         
-        xco2_key, acos_key = keys
+        xco2_key, measurement_key = keys
 
         n_months = len(np.unique(data[[mean_over]].values.astype("datetime64[M]")))
         cmap = cm.get_cmap(cmap)
@@ -574,7 +574,7 @@ class ResultsConcentrations():
         
         for month, color in zip(np.unique(data.month), colors):
             selection = data[data.month == month]
-            ax.scatter(selection[[xco2_key]], selection[acos_key], label=month.astype("datetime64[M]"), color=color, **kwargs)
+            ax.scatter(selection[[xco2_key]], selection[measurement_key], label=month.astype("datetime64[M]"), color=color, **kwargs)
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
 
@@ -590,7 +590,7 @@ class ResultsConcentrations():
             ax.set_ylim(min_val, max_val)
 
         ax.set_xlabel(f"Modeled XCO2{detrend_str}[ppm]")
-        ax.set_ylabel(f"ACOS XCO2{detrend_str}[ppm]")
+        ax.set_ylabel(f"measurement XCO2{detrend_str}[ppm]")
         ax.set_title(f"Correlation of measured vs. modeled XCO2 \nmonthly mean{detrend_str}")
         ax.grid()
         ax.legend()
@@ -1074,90 +1074,477 @@ class ResultsInversion():
         default_kwargs.update(kwargs)
         _ = self.add_plot_on_map(ax = ax, xarr = self.footprints.sum([self.time_coord, "sounding"]), **default_kwargs)
         return fig, ax
-        
 
+class ResultsInversion2():
+    def __init__(
+        self, 
+        result_path: Pathlike,
+        month: str, 
+        flux_path: Pathlike, 
+        lon_coarse: int, 
+        lat_coarse: int, 
+        time_coarse: Optional[int] = None, 
+        coarsen_boundary: str = "pad",
+        time_unit: Timeunit = "week",
+        boundary: Boundary = None,
+        concentration_key: Concentrationkey = "background_inter"
+        ):
+        """Calculates inversion of footprints and expected concentrations and offers plotting possibilities.
 
-def collect_coarse_footprints_and_differences(
-    result_path: Pathlike, 
-    start: str, 
-    stop: str, 
-    lon: int, 
-    lat: int, 
-    time: int=1, 
-    time_by: Literal["week", "day"] = "week", 
-    boundary: Optional[tuple[float, float, float, float]] = None, 
-    coarsen_boundary: str = "pad", 
-    interpolated: bool = True
-    ) -> tuple[xr.Dataset, str]:
-    if time_by == "week":
-        time_by = "week"
-        time_coord = "week"
-        isocalendar = True
-        
-    elif time_by == "day":
-        time_by = "dayofyear"
-        time_coord = "dayofyear"
-        isocalendar = False
-    else:
-        raise ValueError(f"time_by value '{time_by}' not acceptable. Choose from: 'week', 'day'")
+        Args:
+            result_path (Pathlike): Path of file of collected results (from script calc_results.py)
+            month (str): String to specify month to load measurement and flux data from in format YYYY-MM
+            flux_path (Pathlike): Directory and filename of data until timestamp e.g. /path/to/dir/CT2019B.flux1x1.
+            lon_coarse (int): By how much longitude should be coarsened 
+            lat_coarse (int): By how much latitude should be coarsened
+            time_coarse (Optional[int], optional): By how much new time coordinate should be coarsened. Defaults to None.
+            coarsen_boundary (str, optional): Parameter for xr.DataArray.coarsen. Defaults to "pad".
+            time_unit (Timeunit, optional): Time unit to group to. Defaults to "week".
+            boundary (Boundary, optional): region of footprint to use. Defaults to None.
+            concentration_key (Concentrationkey, optional): Data with which difference to measurement xco2 is calculated. Defaults to "background_inter".
+        """        
+        self.result_path = Path(result_path)
+        self.results = pd.read_pickle(self.result_path)
+        self.start = np.datetime64(month).astype("datetime64[D]")
+        self.stop = (np.datetime64(month) + np.timedelta64(1, "M")).astype("datetime64[D]")
+        self.flux_path = Path(flux_path)
+        self.lon_coarse = lon_coarse
+        self.lat_coarse = lat_coarse
+        self.time_coarse = time_coarse
+        self.coarsen_boundary = coarsen_boundary
+        self.time_unit = time_unit
+        self.boundary = boundary
+        self.concentration_key = concentration_key
+
+        self.time_coord, self.isocalendar = self.get_time_coord(self.time_unit)
+        self.flux, self.flux_errs = self.get_flux()
+        self.footprints, self.concentrations, self.concentration_errs = self.get_footprint_and_measurement(self.concentration_key)
+
+        self.coords = self.footprints.stack(new=[self.time_coord, "longitude", "latitude"]).new
+
+        self.footprints_flat = self.footprints.stack(new=[self.time_coord, "longitude", "latitude"])
+        self.flux_flat = self.flux.stack(new=[self.time_coord, "longitude", "latitude"])
+        self.flux_errs_flat = self.flux_errs.stack(new=[self.time_coord, "longitude", "latitude"])
+
+        self.fit_result: Optional[tuple] = None
+        self.predictions: Optional[xr.DataArray] = None
+        self.predictions_flat: Optional[xr.DataArray] = None
     
-    background_key = "background" if not interpolated else "background_inter"
+    @staticmethod
+    def get_time_coord(time_unit: Timeunit):
+        """Gives name of time unti to group data by
 
-    results = pd.read_pickle(result_path)
-    
-    differences = []
-    acos_uncertainties = []
-    sounding_id = []
-    xarrs = []
-    for i, result_row in results.iterrows():
-        differences.append(result_row["xco2_acos"] - result_row[background_key])
-        acos_uncertainties.append(result_row["acos_uncertainty"])
-        sounding_id.append(i)
-        file = os.path.join(result_row["directory"], "Footprint_total_inter_time.nc")
-        if not os.path.exists(path):
-            continue        
-        xarr = xr.load_dataarray(file)
-        xarr = xarr.expand_dims("sounding").assign_coords(dict(sounding=[i]))
-        xarr = xarr.where((xarr.time >= np.datetime64(start)) * (xarr.time < np.datetime64(stop)), drop=True)
-        if not boundary is None:
-            xarr = select_boundary(xarr, boundary)
-        if isocalendar:
-            time_values = xarr["time"].dt.isocalendar()
+        Args:
+            time_unit (Timeunit): Name of time_unit
+
+        Raises:
+            ValueError: If no valid unit is given
+
+        Returns:
+            tuple[str, bool]: time_coord: Name of time coordinate, isocalendar, whether time coord is to be applied on DataArray.dt of DataArray.dt.isocalendar()
+        """        
+        if time_unit == "week":
+            time_coord = "week"
+            isocalendar = True
+            
+        elif time_unit == "day":
+            time_coord = "dayofyear"
+            isocalendar = False
         else:
-            time_values = xarr["time"].dt
-        xarr = xarr.groupby(getattr(time_values, time_by)).sum()
-        xarr_coarse = xarr.coarsen({"longitude":lon, "latitude":lat}, boundary=coarsen_boundary).sum()
-        xarrs.append(xarr_coarse)
+            raise ValueError(f"time_by value '{time_coord}' not acceptable. Choose from: 'week', 'day'")
+        return time_coord, isocalendar
+
+    @staticmethod
+    def apply_coarse_func(
+        xarr: Union[xr.core.rolling.DataArrayCoarsen, xr.core.groupby.DataArrayGroupBy],
+        coarse_func: Union[Callable, str]
+        ) -> xr.DataArray:
+        """Applies coarsening function to grouped/coarsened DataArray. If string is given it is used to call the function from getattr, else its used by .apply
+
+        Args:
+            xarr (Union[xr.core.rolling.DataArrayCoarsen, xr.core.groupby.DataArrayGroupBy]): Array to apply function on.
+            coarse_func (Union[Callable, str]): Function to apply. String used as getattr(xarr, coarse_func), Callable will be used with xarr.apply(coarse_func)
+
+        Returns:
+            xr.DataArray: Output after application of function
+        """        
+        if isinstance(coarse_func, str):
+            xarr = getattr(xarr, coarse_func)()
+        elif isinstance(coarse_func, Callable):
+            xarr = xarr.apply(coarse_func)
+        return xarr
+
+    def coarsen_data(
+        self, 
+        xarr: xr.DataArray, 
+        time_unit: str, 
+        lon_coarse: int, 
+        lat_coarse: int, 
+        coarse_func: Coarsefunc, 
+        coarsen_boundary: str, 
+        time_coarse: Optional[int] = None
+        ) -> xr.DataArray:
+        """Coarsens DataArray in two steps. First groups time to units that are given e.g. weeks and applies coarse_func[0] to grouped object. Then groups along new time_coordinate, longitude and latitude. with coarse_func[1]. If coarse_func is a single value it is applied in both cases
+
+        Args:
+            xarr (xr.DataArray): Array to coarsen
+            time_unit (str): Time unit to convert time to
+            lon_coarse (int): By how much longitude should be coarsened
+            lat_coarse (int): By how much latitude should be coarsened
+            coarse_func (Coarsefunc): Function(s) to apply in first and second grouping
+            coarsen_boundary (str): Value for 'boundary' argument of xr.DataArray.coarsen
+            time_coarse (Optional[int], optional): By how much the new time component should be coarsened. Defaults to None.
+
+        Returns:
+            xr.DataArray: Coarser DataArray
+        """        
+        if not isinstance(coarse_func, (list, tuple)):
+            coarse_func = [coarse_func]*2
+        time_class = xarr["time"].dt
+        if self.isocalendar:
+            time_class = time_class.isocalendar()
+        xarr = xarr.groupby(getattr(time_class, self.time_coord))
+        xarr = self.apply_coarse_func(xarr, coarse_func[0])
+        coarse_dict = dict(longitude=lon_coarse, latitude=lat_coarse)
+        if not time_coarse is None:
+            coarse_dict[self.time_coord] = time_coarse
+        xarr = xarr.coarsen(coarse_dict, boundary=coarsen_boundary)
+        xarr = self.apply_coarse_func(xarr, coarse_func[1])
+        return xarr
+        
+    def get_flux(self) -> tuple[xr.DataArray,xr.DataArray]:
+        """Loads fluxes and its errors and coarsens to parameters given in __init__
+
+        Returns:
+            tuple[xr.DataArray,xr.DataArray]: fluxes and errors
+        """        
+        def get_mean(xarr: xr.DataArray, full_arr: xr.DataArray, groupbyarr: xr.core.groupby.DataArrayGroupBy, means: xr.DataArray):
+            """Helper function for error calculation. Finds out mean of block in xarr based on ungrouped, grouped and fully grouped DataArray"""
+            for key, values in groupbyarr.groups.items():
+                if all(np.isin(xarr.time.values, full_arr.time[values])):
+                    week = int(key)
+            week_mean = means.week.values[np.argmin(week- means.week.values)]
+            lon_mean = means.longitude.values[np.argmin(week- means.longitude.values)]
+            lat_mean = means.latitude.values[np.argmin(week- means.latitude.values)]
+            mean = means.sel(week = week_mean, longitude = lon_mean, latitude=lat_mean)
+            return mean
+            
+        def squared_diff_to_mean(xarr: xr.DataArray, full_arr: xr.DataArray, groupbyarr: xr.core.groupby.DataArrayGroupBy, means: xr.DataArray):
+            """Helper function for error calculation. Calculates square of difference of element of grouped DataArray to the final mean after further coarsening"""
+            mean = get_mean(xarr, full_arr, groupbyarr, means)
+            squared_diff = (xarr - mean)**2
+            squared_diff = squared_diff.sum("time")
+            return squared_diff
+        
+        def get_squared_diff_to_mean(self, flux: xr.DataArray) -> Callable:
+            """Helper function for error calculation. Processes squared_diff_to_mean to be used with xr.core.groupby.DataArrayGroupBy.apply"""
+            time_class = flux["time"].dt
+            if self.isocalendar:
+                time_class = time_class.isocalendar()
+            flux_group = flux.groupby(getattr(time_class, self.time_coord))
+            squared_diff_to_mean_partial = partial(
+                squared_diff_to_mean,
+                full_arr = flux,
+                groupbyarr = flux_group, 
+                means = flux_mean
+            )
+            return squared_diff_to_mean_partial
+
+        flux_files = []
+        for date in np.arange(self.start, self.stop):
+            date_str = str(date).replace("-", "")
+            flux_files.append(self.flux_path.parent / (self.flux_path.name + f"{date_str}.nc"))
+        flux = xr.open_mfdataset(flux_files, drop_variables="time_components").compute()
+        flux = flux.bio_flux_opt + flux.ocn_flux_opt + flux.fossil_flux_imp + flux.fire_flux_imp
+        flux = select_boundary(flux, self.boundary)
+        
+        flux_mean = self.coarsen_data(flux, self.time_unit, self.lon_coarse, self.lat_coarse, "mean", self.coarsen_boundary, self.time_coarse)
+        
+        # Error of mean calculation
+        flux_counts = self.coarsen_data(flux, self.time_unit, self.lon_coarse, self.lat_coarse, ["count", "sum"], self.coarsen_boundary, self.time_coarse)
+        err_func = get_squared_diff_to_mean(self, flux)
+        flux_err = self.coarsen_data(flux, self.time_unit, self.lon_coarse, self.lat_coarse, [err_func, "sum"], self.coarsen_boundary, self.time_coarse)
+        flux_err = np.sqrt(flux_err/flux_counts)/np.sqrt(flux_counts)
+        return flux_mean, flux_err
+
+    def get_footprint_and_measurement(self, 
+        data_key: Concentrationkey
+        ) -> tuple[xr.DataArray, xr.DataArray , xr.DataArray]:
+        """Loads and coarsens footprints according to parameters in __init__. Reads out measurement xco2 values and errors. Calculates difference to given data_key e.g. background and puts result in xr.DataArray.coarsen
+
+        Args:
+            data_key (Concentrationkey): Data with which difference to measurement xco2 is calculated
+
+        Returns:
+            tuple[xr.DataArray, xr.DataArray , xr.DataArray]: footprints, concentration_differences, measurement_xco2 errors
+        """        
+        concentrations = []
+        concentration_errs = []
+        measurement_id = []
+        footprints = []
+        for i, result_row in tqdm(self.results.iterrows(), desc="Loading footprints", total=self.results.shape[0]):
+            concentrations.append(result_row["xco2_measurement"] - result_row[data_key])
+            concentration_errs.append(result_row["measurement_uncertainty"])
+            measurement_id.append(i)
+            file = os.path.join(result_row["directory"], "Footprint_total_inter_time.nc")
+            if not os.path.exists(path):
+                continue        
+            footprint: xr.DataArray = xr.load_dataarray(file)
+            footprint = footprint.expand_dims("measurement").assign_coords(dict(measurement=[i]))
+            footprint = footprint.where((footprint.time >= self.start) * (footprint.time < self.stop), drop=True)
+            footprint = select_boundary(footprint, self.boundary)
+            footprint = self.coarsen_data(footprint, self.time_unit, self.lon_coarse, self.lat_coarse, "sum", self.coarsen_boundary, None)
+            footprints.append(footprint)
+        concentrations = xr.DataArray(
+            data = concentrations,
+            dims = "measurement",
+            coords = dict(measurement = measurement_id)
+        )
+        concentration_errs  = xr.DataArray(
+            data = concentration_errs,
+            dims = "measurement",
+            coords = dict(measurement = measurement_id)
+        )
+        # merging and conversion from s m^3/kg to s m^2/mol
+        footprints = xr.concat(footprints, dim = "measurement")/100 * 0.044
+        # extra time coarsening for consistent coordinates 
+        if not self.time_coarse is None:
+            footprints = footprints.coarsen({self.time_coord:self.time_coarse}, boundary=self.coarsen_boundary).sum()
+        footprints = footprints.where(~np.isnan(footprints), 0)
+        return footprints, concentrations, concentration_errs
+
+    def fit(
+        self, 
+        costum_yerr: Optional[Union[xr.DataArray, float, list[float]]] = None, 
+        costum_xerr: Optional[list] = None
+        ) -> xr.DataArray:
+        """Uses bayesian inversion to estiamte emissions.
+
+        Args:
+            costum_yerr (Optional[list], optional): Can be used instead of loaded errorof measurement. Defaults to None.
+            costum_xerr (Optional[list], optional): Can be used instead of error of the mean of the fluxes. Defaults to None.
+
+        Returns:
+            xr.DataArray: estimated emissions
+        """        
+
+        concentration_errs = self.concentration_errs.values
+        if not costum_yerr is None:
+            if isinstance(costum_yerr, float):
+                costum_yerr = np.ones_like(concentration_errs) * costum_yerr
+            elif isinstance(costum_yerr, xr.DataArray):
+                if costum_yerr.size == 1:
+                    costum_yerr = np.ones_like(flux_errs) * costum_yerr.values
+                else:
+                    costum_yerr = costum_yerr.values
+            concentration_errs = costum_yerr
+        
+        flux_errs = self.flux_errs_flat
+        if not costum_xerr is None:
+            if isinstance(costum_xerr, float):
+                costum_xerr = np.ones_like(flux_errs) * costum_xerr
+            if isinstance(costum_xerr, xr.DataArray):
+                if costum_xerr.size == 1:
+                    costum_xerr = np.ones_like(flux_errs) * costum_xerr.values
+                elif costum_xerr.shape == self.flux_errs:
+                    costum_xerr = costum_xerr.stack(new=[self.time_coord, "longitude", "latitude"]).values        
+                else:
+                    costum_xerr.values
+            flux_errs = costum_xerr
+
+
+        reg = bayesinverse.Regression(
+            y = self.concentrations.values*1e-6, 
+            K = self.footprints_flat.values, 
+            x_prior = self.flux_flat.values, 
+            x_covariance = flux_errs**2, 
+            y_covariance = concentration_errs*1e-6**2
+        )
+        self.fit_result = reg.fit()
+        self.predictions_flat = xr.DataArray(
+            data = self.fit_result[0],
+            dims = ["new"],
+            coords = dict(new=self.coords)
+        )
+        self.predictions = self.predictions_flat.unstack("new")
+        return self.predictions
+
+    ################################## Plotting ########################################
+
+    def plot_correlation_concentration(
+        self, 
+        ax: Optional[plt.Axes] = None,
+        figsize: Optional[tuple[int, int]] = None,
+        add_line: bool = True,
+        line_kwargs: dict = dict(),
+        **kwargs   
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        line_default = dict(color="gray", linestyle="dashed", linewidth=1)
+        line_default.update(line_kwargs)
+
+        concentrations = self.concentrations.values
+        concentration_prediciton = self.footprints_flat.values @ self.predictions_flat.values * 1e6
+
+        ax.scatter(concentrations, concentration_prediciton, **kwargs)
+        ax.axis("equal")
+        if add_line:
+            ax.autoscale(enable=False)
+            ax.plot([-100, 100],[-100, 100], **line_default)
+        ax.set_title("Correlation of concentrations")
+        ax.set_xlabel("Concentration measurement [ppm]")
+        ax.set_ylabel("Concentration from prediction [ppm]")
+        ax.grid(True)
+        return fig, ax
+
+    def plot_correlation_emission(
+        self,
+        ax: Optional[plt.Axes] = None,
+        figsize: Optional[tuple[int, int]] = None,
+        add_line: bool = True,
+        line_kwargs: dict = dict(),
+        **kwargs   
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        line_default = dict(color="gray", linestyle="dashed", linewidth=1)
+        line_default.update(line_kwargs)
+
+        ax.scatter(self.flux_flat.values, self.predictions_flat.values, **kwargs)
+        ax.axis("equal")
+        if add_line:
+            ax.autoscale(enable=False)
+            ax.plot([-100, 100],[-100, 100], **line_default)
+        ax.set_title("Correlation of emissions")
+        ax.set_xlabel(r"Emmission prior [mol s$^{-1}$ m$^{-2}$]")
+        ax.set_ylabel(r"Emission prediction [mol s$^{-1}$ m$^{-2}$]")
+        ax.grid(True)
+        return fig, ax
+
+
+    def plot_correlation_prediction_footprint(
+        self,
+        ax: Optional[plt.Axes] = None,
+        figsize: Optional[tuple[int, int]] = None,
+        **kwargs   
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        ax.scatter(self.footprints_flat.sum("measurement").values, self.predictions_flat.values, **kwargs)
+        ax.set_title("Correlation footprint and predicted emissions")
+        ax.set_xlabel(r"Footprint values [s m$^{2}$ mol$^{-1}$]")
+        ax.set_ylabel(r"Emission prediction [mol s$^{-1}$ m$^{-2}$]")
+        ax.grid(True)
+        return fig, ax
+
+    @staticmethod
+    def add_plot_on_map(ax: plt.Axes, xarr: xr.DataArray, **kwargs):
+        xarr.plot(ax = ax, **kwargs)
+        FlexDataset2.add_map(ax = ax)
+        return ax
     
+    def plot_total_emission(
+        self,
+        data_type: Literal["prior", "predicted", "difference"],
+        ax: plt.Axes = None,
+        figsize: tuple[int, int] = None,
+        **kwargs
+    ) -> tuple[plt.Figure, plt.Axes]:
 
-    differences  = xr.Dataset(
-        data_vars = dict(
-            differences = (["sounding"], differences)
-        ),
-        coords = dict(
-            sounding = (["sounding"], sounding_id)
-        )
-    )
-    acos_uncertainties  = xr.Dataset(
-        data_vars = dict(
-            acos_uncertainties = (["sounding"], acos_uncertainties)
-        ),
-        coords = dict(
-            sounding = (["sounding"], sounding_id)
-        )
-    )
-    # /100 * 0.044 to account for height of Flexpart box and molar weight of CO2
-    xarr_merged = xr.concat(xarrs, dim="sounding")/100 * 0.044
-    xarr_merged = xarr_merged.coarsen({time_coord:time}, boundary=coarsen_boundary).sum()
-    xarr_merged = xarr_merged.where(~np.isnan(xarr_merged), 0).to_dataset(name="footprints")
-    dataset = xarr_merged.merge(differences).merge(acos_uncertainties)
-    return dataset, time_coord
+        if data_type == "prior":
+            data = self.flux
+            title = "Prior emissions"
+        elif data_type == "predicited":
+            data = self.predictions
+            title = "Predicted emissions"
+        elif data_type == "difference":
+            data = self.flux - self.predictions
+            title = "Predicted minus Prior emissions"
+        else:
+            raise ValueError(f'"data_type" can oly be "prior", "predicted", "difference" not {data_type}')
+        data = data.sum(self.time_coord)
+        v = max(np.abs(data))
+        default_kwargs = dict(cmap = "bwr", x = "longitude", y = "latitude", vmin = -v, vmax = v, cbar_kwargs=dict(label=r"mol s$^{-1}$ m$^{-2}$"))
+        default_kwargs.update(kwargs)
+
+        if ax is None:
+            fig, ax = FlexDataset2.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        
+        ax = self.add_plot_on_map(ax=ax, xarr=data, **default_kwargs)
+        ax.set_title(title)
+        return fig, ax
+
+    def plot_total_emission(
+        self,
+        data_type: Literal["prior", "predicted", "difference"],
+        ax: plt.Axes = None,
+        figsize: tuple[int, int] = None,
+        **kwargs
+    ) -> tuple[plt.Figure, plt.Axes]:
+
+        if data_type == "prior":
+            data = self.flux
+            title = "Prior emissions"
+        elif data_type == "predicted":
+            data = self.predictions
+            title = "Predicted emissions"
+        elif data_type == "difference":
+            data: xr.DataArray = self.predictions - self.flux 
+            title = "Predicted minus Prior emissions"
+        else:
+            raise ValueError(f'"data_type" can oly be "prior", "predicted", "difference" not {data_type}')
+        data = data.sum(self.time_coord)
+        v = np.abs(data).max()
+        default_kwargs = dict(cmap = "bwr", x = "longitude", y = "latitude", vmin = -v, vmax = v, cbar_kwargs=dict(label=r"mol s$^{-1}$ m$^{-2}$"))
+        default_kwargs.update(kwargs)
+
+        if ax is None:
+            fig, ax = FlexDataset2.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        
+        ax = self.add_plot_on_map(ax=ax, xarr=data, **default_kwargs)
+        ax.set_title(title)
+        return fig, ax
 
 
 
+    def plot_all_total_emissions(
+        self,
+        figsize: tuple[int, int] = (12, 3),
+        **kwargs
+    ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes]]:
+        fig, axes = FlexDataset2.subplots(1,3, figsize=figsize, **kwargs)
+        v = max([np.abs(self.flux.sum("week")).max(), np.abs(self.predictions.sum("week")).max()])
+        _ = self.plot_total_emission(data_type="prior", ax = axes[0], vmin = -v, vmax = v)
+        _ = self.plot_total_emission(data_type="predicted", ax = axes[1], vmin = -v, vmax = v)
+        _ = self.plot_total_emission(data_type="difference", ax = axes[2])
+        return fig, axes
 
+    def plot_footprint(
+        self,
+        ax: plt.Axes = None,
+        figsize: tuple[int, int] = None,
+        **kwargs
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = FlexDataset2.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
 
-
+        default_kwargs = dict(cmap="jet", cbar_kwargs=dict(label = r"s m$^2$ mol$^{-1}$]"))
+        default_kwargs.update(kwargs)
+        _ = self.add_plot_on_map(ax = ax, xarr = self.footprints.sum([self.time_coord, "measurement"]), **default_kwargs)
+        return fig, ax
 
 
 
