@@ -23,13 +23,16 @@ def get_output_dirs(path: str, r: bool, dirs: list[str] = []) -> list[str]:
         list[str]: List of paths of directories with FLEXPART output
     """    
     if r:
-        for dir in os.listdir(path):
-            dir = os.path.join(path, dir)
-            if os.path.isdir(dir):
-                if in_dir(dir, "grid_time"):
-                    dirs.append(dir)
-                else:
-                    dirs.extend(get_output_dirs(dir, r, []))
+        if in_dir(path, "grid_time"):
+            dirs.append(path)
+        else: 
+            for dir in os.listdir(path):
+                dir = os.path.join(path, dir)
+                if os.path.isdir(dir):
+                    if in_dir(dir, "grid_time"):
+                        dirs.append(dir)
+                    else:
+                        dirs.extend(get_output_dirs(dir, r, []))
     else:
         dirs = [path]
     return dirs
