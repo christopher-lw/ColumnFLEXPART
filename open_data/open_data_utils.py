@@ -359,7 +359,12 @@ class TcconMeasurement(ColumnMeasurement):
         # Get data for needed time
         time = np.datetime64(time)
         data = data.interp(time=[time])
-        data = data.interp(ak_zenith=[float(data.asza_deg)])
+        if data.ak_zenith.values.min() >= float(data.asza_deg):
+            data = data.sel(ak_zenith=data.ak_zenith.min())
+        elif data.ak_zenith.values.max() <= float(data.asza_deg):
+            data = data.sel(ak_zenith=data.ak_zenith.max())
+        else:
+            data = data.interp(ak_zenith=[float(data.asza_deg)])
         data = data.isel(prior_date=np.argmin(np.abs(time - data.prior_date.values)))
         # Interpolate averaging kernel to prior levels 
         data = data.interp(ak_P_hPa = data.prior_Pressure.values, kwargs = dict(fill_value="extrapolate"))
@@ -409,7 +414,6 @@ class TcconMeasurement(ColumnMeasurement):
             # set values of averaging kernel to 0 for these values (only use prior here)
             averaging_kernel = xr.where(no_data, 0, averaging_kernel)
             dataset = dataset.drop("ak_co2")
-            averaging_kernel = averaging_kernel.assign_coords()
             dataset = dataset.assign(dict(ak_co2 = averaging_kernel))
             dataarray = dataarray * dataset.ak_co2 + dataset.prior_co2 * (1 - dataset.ak_co2)
         pressure_weights = (dataset.prior_Pressure.values - np.pad(dataset.prior_Pressure.values, (0, 1), "constant")[1:])/self.surface_pressure()
