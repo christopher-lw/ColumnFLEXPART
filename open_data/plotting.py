@@ -1,11 +1,14 @@
+from curses import noecho
 from lib2to3.pgen2.token import OP
 from tkinter import E
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import xarray as xr
+from Abstra
 
 from pathlib import Path
-from typing import Union, Literal, Optional, Callable
+from typing import Any, Union, Literal, Optional, Callable, Iterable
 import os
 import warnings
 from functools import cache, partial
@@ -604,6 +607,468 @@ Timeunit = Literal["week", "day"]
 Coarsefunc = Union[Callable, tuple[Callable, Callable], str, tuple[str, str]]
 Concentrationkey = Literal["background", "background_inter", "xco2", "xco2_inter"]
 
+class Inversion():
+    
+    def __init__(
+        self, 
+        spatial_valriables: list[str],
+        result_path: Pathlike,
+        month: str, 
+        flux_path: Pathlike, 
+        time_coarse: Optional[int] = None, 
+        coarsen_boundary: str = "pad",
+        time_unit: Timeunit = "week",
+        boundary: Boundary = None,
+        concentration_key: Concentrationkey = "background_inter",
+        data_outside_month: bool = False,
+        bio_only: bool = False
+    ):
+        """Calculates inversion of footprints and expected concentrations and offers plotting possibilities.
+
+        Args:
+            result_path (Pathlike): Path of file of collected results (from script calc_results.py)
+            month (str): String to specify month to load measurement and flux data from in format YYYY-MM
+            flux_path (Pathlike): Directory and filename of data until timestamp e.g. /path/to/dir/CT2019B.flux1x1.
+            time_coarse (Optional[int], optional): By how much new time coordinate should be coarsened. Defaults to None.
+            coarsen_boundary (str, optional): Parameter for xr.DataArray.coarsen. Defaults to "pad".
+            time_unit (Timeunit, optional): Time unit to group to. Defaults to "week".
+            boundary (Boundary, optional): region of footprint to use. Defaults to None.
+            concentration_key (Concentrationkey, optional): Data with which difference to measurement xco2 is calculated. Defaults to "background_inter".
+            data_outdside_month (bool, optional): Wether to also use footprint data outsinde of target month. Defaults to False.
+            bio_only (bool, optional): Whether to only use emission data of biospheric fluxes (no fire and fossile fuel). Defaults to Flase
+        """
+        self.spatial_valriables = spatial_valriables
+        self.result_path = Path(result_path)
+        self.results = pd.read_pickle(self.result_path)
+        self.start = np.datetime64(month).astype("datetime64[D]")
+        self.stop = (np.datetime64(month) + np.timedelta64(1, "M")).astype("datetime64[D]")
+        self.flux_path = Path(flux_path)
+        self.time_coarse = time_coarse
+        self.coarsen_boundary = coarsen_boundary
+        self.time_unit = time_unit
+        self.boundary = boundary
+        self.concentration_key = concentration_key
+        self.data_outside_month = data_outside_month
+        self.bio_only = bio_only
+        self.min_time = None
+        self.fit_result: Optional[tuple] = None
+        self.predictions: Optional[xr.DataArray] = None
+        self.predictions_flat: Optional[xr.DataArray] = None
+        self.l_curve_result: Optional[tuple] = None
+        self.alpha: Optional[Iterable[float]] = None
+        self.reg: Optional[bayesinverse.Regression] = None
+
+        self.time_coord, self.isocalendar = self.get_time_coord(self.time_unit)
+        self.footprints, self.concentrations, self.concentration_errs = self.get_footprint_and_measurement(self.concentration_key)
+        self.flux, self.flux_errs = self.get_flux()
+
+        self.coords = self.footprints.stack(new=[self.time_coord, *self.spatial_valriables]).new
+
+        self.footprints_flat = self.footprints.stack(new=[self.time_coord, *self.spatial_valriables])
+        self.flux_flat = self.flux.stack(new=[self.time_coord, *self.spatial_valriables])
+        self.flux_errs_flat = self.flux_errs.stack(new=[self.time_coord, *self.spatial_valriables])
+
+    @staticmethod
+    def get_time_coord(time_unit: Timeunit):
+        """Gives name of time unti to group data by
+
+        Args:
+            time_unit (Timeunit): Name of time_unit
+
+        Raises:
+            ValueError: If no valid unit is given
+
+        Returns:
+            tuple[str, bool]: time_coord: Name of time coordinate, isocalendar, whether time coord is to be applied on DataArray.dt of DataArray.dt.isocalendar()
+        """        
+        if time_unit == "week":
+            time_coord = "week"
+            isocalendar = True
+            
+        elif time_unit == "day":
+            time_coord = "dayofyear"
+            isocalendar = False
+        else:
+            raise ValueError(f"time_by value '{time_coord}' not acceptable. Choose from: 'week', 'day'")
+        return time_coord, isocalendar
+
+    def coarsen_data(
+        self, 
+        xarr: xr.DataArray, 
+        coarse_func: Coarsefunc, 
+        time_coarse: Optional[int] = None
+        ) -> xr.DataArray:    
+        """Coarsens DataArray and applyling coarse function to blocks. Takes care of spatial and temporal coarsening
+
+        Args:
+            xarr (xr.DataArray): DataArray to reduce
+            coarse_func (Coarsefunc): Function to apply
+            time_coarse (Optional[int], optional): Specifiing by how much to coarsen time coordinte. Defaults to None.
+
+        Returns:
+            xr.DataArray: Coarser DataArray
+        """            
+        raise NotImplementedError
+
+    def get_footprint_and_measurement(self, 
+        data_key: Concentrationkey
+        ) -> tuple[xr.DataArray, xr.DataArray , xr.DataArray]:
+        """Loads and coarsens footprints according to parameters in __init__. Reads out measurement xco2 values and errors. Calculates difference to given data_key e.g. background and puts result in xr.DataArray.coarsen
+
+        Args:
+            data_key (Concentrationkey): Data with which difference to measurement xco2 is calculated
+
+        Returns:
+            tuple[xr.DataArray, xr.DataArray , xr.DataArray]: footprints, concentration_differences, measurement_xco2 errors
+        """     
+        min_time = self.start
+        concentrations = []
+        concentration_errs = []
+        measurement_id = []
+        footprints = []
+        for i, result_row in tqdm(self.results.iterrows(), desc="Loading footprints", total=self.results.shape[0]):
+            concentrations.append(result_row["xco2_measurement"] - result_row[data_key])
+            concentration_errs.append(result_row["measurement_uncertainty"])
+            measurement_id.append(i)
+            file = os.path.join(result_row["directory"], "Footprint_total_inter_time.nc")
+            if not os.path.exists(path):
+                continue        
+            footprint: xr.DataArray = xr.load_dataarray(file)
+            footprint = footprint.expand_dims("measurement").assign_coords(dict(measurement=[i]))
+            if not self.data_outside_month:
+                footprint = footprint.where((footprint.time >= self.start) * (footprint.time < self.stop), drop=True)
+            else:
+                min_time = footprint.time.min().values.astype("datetime64[D]") if footprint.time.min() < min_time else min_time
+
+            footprint = select_boundary(footprint, self.boundary)
+            footprint = self.coarsen_data(footprint, "sum", None)
+            footprints.append(footprint)
+        self.min_time = min_time
+        concentrations = xr.DataArray(
+            data = concentrations,
+            dims = "measurement",
+            coords = dict(measurement = measurement_id)
+        )
+        concentration_errs  = xr.DataArray(
+            data = concentration_errs,
+            dims = "measurement",
+            coords = dict(measurement = measurement_id)
+        )
+        # merging and conversion from s m^3/kg to s m^2/mol
+        footprints = xr.concat(footprints, dim = "measurement")/100 * 0.044
+        # extra time coarsening for consistent coordinates 
+        if not self.time_coarse is None:
+            footprints = footprints.coarsen({self.time_coord:self.time_coarse}, boundary=self.coarsen_boundary).sum()
+        footprints = footprints.where(~np.isnan(footprints), 0)
+        return footprints, concentrations, concentration_errs
+
+    def get_flux(self) -> tuple[xr.DataArray,xr.DataArray]:
+        """Loads fluxes and its errors and coarsens to parameters given in __init__
+
+        Returns:
+            tuple[xr.DataArray,xr.DataArray]: fluxes and errors
+        """        
+        flux_files = []
+        for date in np.arange(self.min_time.astype("datetime64[D]"), self.stop):
+            date_str = str(date).replace("-", "")
+            flux_files.append(self.flux_path.parent / (self.flux_path.name + f"{date_str}.nc"))
+        flux = xr.open_mfdataset(flux_files, drop_variables="time_components").compute()
+        if self.bio_only:
+            flux = flux.bio_flux_opt + flux.ocn_flux_opt
+        else:
+            flux = flux.bio_flux_opt + flux.ocn_flux_opt + flux.fossil_flux_imp + flux.fire_flux_imp
+        flux = select_boundary(flux, self.boundary)
+        flux_mean = self.coarsen_data(flux "mean", self.time_coarse)
+        flux_err = self.get_flux_err(flux, flux_mean)
+        # Error of mean calculation
+        return flux_mean, flux_err
+
+    def get_flux_err(self, flux: xr.DataArray, flux_mean: xr.DataArray) -> xr.DataArray:
+        """Computes error of the mean of the fluxes
+
+        Args:
+            flux (xr.DataArray): original flux data
+            flux_mean (xr.DataArray): fully coarsened flux data
+
+        Returns:
+            xr.DataArray: errors of means in flux_mean
+        """        
+        raise NotImplementedError
+
+    def get_regression(
+        self,
+        x: Optional[np.ndarray] = None,
+        yerr: Optional[Union[np.ndarray, xr.DataArray, float, list[float]]] = None, 
+        xerr: Optional[Union[np.ndarray, list]] = None,
+        with_prior: Optional[bool] = True,
+        ) -> bayesinverse.Regression:
+        """Constructs a Regression object from class attributes and inputs 
+
+        Args:
+            x (Optional[np.ndarray], optional): Alternative values for prior. Defaults to None.
+            yerr (Optional[Union[np.ndarray, xr.DataArray, float, list[float]]], optional): Alternative values for y_covariance. Defaults to None.
+            xerr (Optional[Union[np.ndarray, list]], optional): Alternative values for x_covariances. Defaults to None.
+            with_prior (Optional[bool], optional): Switch to use prior. Defaults to True.
+
+        Returns:
+            bayesinverse.Regression: Regression model
+        """        
+        concentration_errs = self.concentration_errs.values
+        if not yerr is None:
+            if isinstance(yerr, float):
+                yerr = np.ones_like(concentration_errs) * yerr
+            elif isinstance(yerr, xr.DataArray):
+                if yerr.size == 1:
+                    yerr = np.ones_like(concentration_errs) * yerr.values
+                else:
+                    yerr = yerr.values
+            concentration_errs = yerr
+        
+        flux_errs = self.flux_errs_flat
+        if not xerr is None:
+            if isinstance(xerr, float):
+                xerr = np.ones_like(flux_errs) * xerr
+            if isinstance(xerr, xr.DataArray):
+                if xerr.size == 1:
+                    xerr = np.ones_like(flux_errs) * xerr.values
+                elif xerr.shape == self.flux_errs.shape:
+                    xerr = xerr.stack(new=[self.time_coord, "longitude", "latitude"]).values        
+                else:
+                    xerr.values
+            flux_errs = xerr
+
+        if not x is None:
+            x_prior = x
+        else:
+            x_prior = self.flux_flat.values
+
+        if with_prior:
+            self.reg = bayesinverse.Regression(
+                y = self.concentrations.values*1e-6, 
+                K = self.footprints_flat.values, 
+                x_prior = x_prior, 
+                x_covariance = flux_errs**2, 
+                y_covariance = concentration_errs*1e-6**2
+            )
+        else:
+            self.reg = bayesinverse.Regression(
+                y = self.concentrations.values*1e-6, 
+                K = self.footprints_flat.values
+            )
+        return self.reg
+
+    def fit(
+        self, 
+        x: Optional[np.ndarray] = None,
+        yerr: Optional[Union[np.ndarray, xr.DataArray, float, list[float]]] = None, 
+        xerr: Optional[Union[np.ndarray, list]] = None,
+        with_prior: Optional[bool] = True,
+        alpha: float = 1,
+        ) -> xr.DataArray:
+        """Uses bayesian inversion to estiamte emissions.
+
+        Args:
+            yerr (Optional[list], optional): Can be used instead of loaded errorof measurement. Defaults to None.
+            xerr (Optional[list], optional): Can be used instead of error of the mean of the fluxes. Defaults to None.
+            with_prior (Optional[bool]): Wether to use a prior or not. True strongly recommended. Defaults to True.
+            alpha (Optional[float]): Value to weigth xerr against yerr. Is used as in l curve calculation. Defaults to 1.
+
+        Returns:
+            xr.DataArray: estimated emissions
+        """        
+        _ = self.get_regression(x, yerr, xerr, with_prior)
+        
+
+        if alpha != 1:
+            result = self.reg.compute_l_curve([alpha])
+            self.fit_result = (
+                result["x_est"][0],
+                result["res"][0],
+                result["rank"][0],
+                result["s"][0]
+            )
+        else:
+            self.fit_result = self.reg.fit()
+        self.predictions_flat = xr.DataArray(
+            data = self.fit_result[0],
+            dims = ["new"],
+            coords = dict(new=self.coords)
+        )
+        self.predictions = self.predictions_flat.unstack("new")
+        return self.predictions
+
+    def compute_l_curve(
+        self, 
+        alpha: Iterable[float],
+        cond: Any=None,
+        x: Optional[np.ndarray] = None,
+        yerr: Optional[Union[np.ndarray, xr.DataArray, float, list[float]]] = None, 
+        xerr: Optional[Union[np.ndarray, list]] = None,
+        with_prior: Optional[bool] = True
+        ) -> xr.DataArray:
+        """Uses bayesian inversion to estiamte emissions.
+
+        Args:
+            yerr (Optional[list], optional): Can be used instead of loaded errorof measurement. Defaults to None.
+            xerr (Optional[list], optional): Can be used instead of error of the mean of the fluxes. Defaults to None.
+            with_prior (Optional[bool]): Wether to use a prior or not. True strongly recommended. Defaults to True.
+
+        Returns:
+            xr.DataArray: estimated emissions
+        """        
+
+        concentration_errs = self.concentration_errs.values
+        if not yerr is None:
+            if isinstance(yerr, float):
+                yerr = np.ones_like(concentration_errs) * yerr
+            elif isinstance(yerr, xr.DataArray):
+                if yerr.size == 1:
+                    yerr = np.ones_like(concentration_errs) * yerr.values
+                else:
+                    yerr = yerr.values
+            concentration_errs = yerr
+        
+        flux_errs = self.flux_errs_flat
+        if not xerr is None:
+            if isinstance(xerr, float):
+                xerr = np.ones_like(flux_errs) * xerr
+            if isinstance(xerr, xr.DataArray):
+                if xerr.size == 1:
+                    xerr = np.ones_like(flux_errs) * xerr.values
+                elif xerr.shape == self.flux_errs:
+                    xerr = xerr.stack(new=[self.time_coord, self.spatial_valriables]).values        
+                else:
+                    xerr.values
+            flux_errs = xerr
+
+        if not x is None:
+            x_prior = x
+        else:
+            x_prior = self.flux_flat.values
+
+        if with_prior:
+            reg = bayesinverse.Regression(
+                y = self.concentrations.values*1e-6, 
+                K = self.footprints_flat.values, 
+                x_prior = x_prior, 
+                x_covariance = flux_errs**2, 
+                y_covariance = concentration_errs*1e-6**2
+            )
+        else:
+            reg = bayesinverse.Regression(
+                y = self.concentrations.values*1e-6, 
+                K = self.footprints_flat.values
+            )
+        self.l_curve_result = reg.compute_l_curve(alpha, cond)
+        self.alpha = alpha
+        return self.l_curve_result
+
+    ################################## Plotting ########################################
+
+    def plot_l_curve(
+        self,
+        ax: Optional[plt.Axes] = None,
+        figsize: Optional[tuple[int, int]] = None,
+        cbar: bool = False,
+        cbar_kwargs: dict = dict(),
+        mark_ind: Optional[int] = None,
+        mark_kwargs: dict = dict(),
+        
+        **kwargs
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+
+        
+
+        sc = ax.scatter(
+            self.l_curve_result["loss_forward_model"],
+            self.l_curve_result["loss_regularization"],
+            **kwargs)
+        if cbar:
+            fig.colorbar(sc, ax=ax, **cbar_kwargs)
+        if mark_ind:
+            mark_alpha = self.alpha[mark_ind]
+
+            mark_default_kwargs = dict(
+            s=50,
+            label=f"$lambda = {mark_alpha:.4}$",
+            alpha = 0.5,
+            color="grey"
+            )
+            mark_default_kwargs.update(mark_kwargs)
+            x_val = self.l_curve_result["loss_forward_model"][mark_ind]
+            y_val = self.l_curve_result["loss_regularization"][mark_ind]
+            ax.scatter(
+                x_val,
+                y_val,
+                **mark_default_kwargs
+            )
+        ax.set_xlabel("Loss of forward model")
+        ax.set_ylabel("Loss of regularization")
+        ax.set_title("L-curve")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        return fig, ax
+
+    def plot_correlation_concentration(
+        self, 
+        ax: Optional[plt.Axes] = None,
+        figsize: Optional[tuple[int, int]] = None,
+        add_line: bool = True,
+        line_kwargs: dict = dict(),
+        **kwargs   
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        line_default = dict(color="gray", linestyle="dashed", linewidth=1)
+        line_default.update(line_kwargs)
+
+        concentrations = self.concentrations.values
+        concentration_prediciton = self.footprints_flat.values @ self.predictions_flat.values * 1e6
+
+        ax.scatter(concentrations, concentration_prediciton, **kwargs)
+        ax.axis("equal")
+        if add_line:
+            ax.autoscale(enable=False)
+            ax.plot([-100, 100],[-100, 100], **line_default)
+        ax.set_title("Correlation of concentrations")
+        ax.set_xlabel("Concentration measurement [ppm]")
+        ax.set_ylabel("Concentration from prediction [ppm]")
+        ax.grid(True)
+        return fig, ax
+
+    def plot_correlation_emission(
+        self,
+        ax: Optional[plt.Axes] = None,
+        figsize: Optional[tuple[int, int]] = None,
+        add_line: bool = True,
+        line_kwargs: dict = dict(),
+        **kwargs   
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        line_default = dict(color="gray", linestyle="dashed", linewidth=1)
+        line_default.update(line_kwargs)
+
+        ax.scatter(self.flux_flat.values, self.predictions_flat.values, **kwargs)
+        ax.axis("equal")
+        if add_line:
+            ax.autoscale(enable=False)
+            ax.plot([-100, 100],[-100, 100], **line_default)
+        ax.set_title("Correlation of emissions")
+        ax.set_xlabel(r"Emmission prior [mol s$^{-1}$ m$^{-2}$]")
+        ax.set_ylabel(r"Emission prediction [mol s$^{-1}$ m$^{-2}$]")
+        ax.grid(True)
+        return fig, ax
+
+
 class ResultsInversion():
     def __init__(
         self, 
@@ -654,6 +1119,9 @@ class ResultsInversion():
         self.fit_result: Optional[tuple] = None
         self.predictions: Optional[xr.DataArray] = None
         self.predictions_flat: Optional[xr.DataArray] = None
+        self.l_curve_result: Optional[tuple] = None
+        self.alpha: Optional[Iterable[float]] = None
+        self.reg: Optional[bayesinverse.Regression] = None
 
         self.time_coord, self.isocalendar = self.get_time_coord(self.time_unit)
         self.footprints, self.concentrations, self.concentration_errs = self.get_footprint_and_measurement(self.concentration_key)
@@ -694,7 +1162,7 @@ class ResultsInversion():
     @staticmethod
     def apply_coarse_func(
         xarr: Union[xr.core.rolling.DataArrayCoarsen, xr.core.groupby.DataArrayGroupBy],
-        coarse_func: Union[Callable, str]
+        coarse_func: Union[Callable[[xr.DataArray], float], str]
         ) -> xr.DataArray:
         """Applies coarsening function to grouped/coarsened DataArray. If string is given it is used to call the function from getattr, else its used by .apply
 
@@ -759,16 +1227,16 @@ class ResultsInversion():
             for key, values in groupbyarr.groups.items():
                 if all(np.isin(xarr.time.values, full_arr.time[values])):
                     time = int(key)
-            time_mean = means[self.time_coord].values[np.argmin(time- means[self.time_coord].values)]
-            lon_mean = means.longitude.values[np.argmin(time- means.longitude.values)]
-            lat_mean = means.latitude.values[np.argmin(time- means.latitude.values)]
+            time_mean = means[self.time_coord][np.argmin(np.abs(time - means[self.time_coord].values))]
+            lon_mean = means.longitude.values[np.argmin(np.abs(xarr.longitude.values[:, None] - means.longitude.values[None, :]), axis = 1)]
+            lat_mean = means.latitude.values[np.argmin(np.abs(xarr.latitude.values[:, None] - means.latitude.values[None, :]), axis = 1)]
             mean = means.sel({self.time_coord : time_mean, "longitude" : lon_mean, "latitude":lat_mean})
             return mean
             
         def squared_diff_to_mean(xarr: xr.DataArray, full_arr: xr.DataArray, groupbyarr: xr.core.groupby.DataArrayGroupBy, means: xr.DataArray):
             """Helper function for error calculation. Calculates square of difference of element of grouped DataArray to the final mean after further coarsening"""
             mean = get_mean(xarr, full_arr, groupbyarr, means)
-            squared_diff = (xarr - mean)**2
+            squared_diff = (xarr - mean.values[None, :])**2
             squared_diff = squared_diff.sum("time")
             return squared_diff
         
@@ -858,8 +1326,101 @@ class ResultsInversion():
         footprints = footprints.where(~np.isnan(footprints), 0)
         return footprints, concentrations, concentration_errs
 
+    def get_regression(
+        self,
+        x: Optional[np.ndarray] = None,
+        yerr: Optional[Union[np.ndarray, xr.DataArray, float, list[float]]] = None, 
+        xerr: Optional[Union[np.ndarray, list]] = None,
+        with_prior: Optional[bool] = True,
+        ) -> bayesinverse.Regression:
+        concentration_errs = self.concentration_errs.values
+        if not yerr is None:
+            if isinstance(yerr, float):
+                yerr = np.ones_like(concentration_errs) * yerr
+            elif isinstance(yerr, xr.DataArray):
+                if yerr.size == 1:
+                    yerr = np.ones_like(concentration_errs) * yerr.values
+                else:
+                    yerr = yerr.values
+            concentration_errs = yerr
+        
+        flux_errs = self.flux_errs_flat
+        if not xerr is None:
+            if isinstance(xerr, float):
+                xerr = np.ones_like(flux_errs) * xerr
+            if isinstance(xerr, xr.DataArray):
+                if xerr.size == 1:
+                    xerr = np.ones_like(flux_errs) * xerr.values
+                elif xerr.shape == self.flux_errs.shape:
+                    xerr = xerr.stack(new=[self.time_coord, "longitude", "latitude"]).values        
+                else:
+                    xerr.values
+            flux_errs = xerr
+
+        if not x is None:
+            x_prior = x
+        else:
+            x_prior = self.flux_flat.values
+
+        if with_prior:
+            self.reg = bayesinverse.Regression(
+                y = self.concentrations.values*1e-6, 
+                K = self.footprints_flat.values, 
+                x_prior = x_prior, 
+                x_covariance = flux_errs**2, 
+                y_covariance = concentration_errs*1e-6**2
+            )
+        else:
+            self.reg = bayesinverse.Regression(
+                y = self.concentrations.values*1e-6, 
+                K = self.footprints_flat.values
+            )
+        return self.reg
+
     def fit(
         self, 
+        x: Optional[np.ndarray] = None,
+        yerr: Optional[Union[np.ndarray, xr.DataArray, float, list[float]]] = None, 
+        xerr: Optional[Union[np.ndarray, list]] = None,
+        with_prior: Optional[bool] = True,
+        alpha: float = 1,
+        ) -> xr.DataArray:
+        """Uses bayesian inversion to estiamte emissions.
+
+        Args:
+            yerr (Optional[list], optional): Can be used instead of loaded errorof measurement. Defaults to None.
+            xerr (Optional[list], optional): Can be used instead of error of the mean of the fluxes. Defaults to None.
+            with_prior (Optional[bool]): Wether to use a prior or not. True strongly recommended. Defaults to True.
+            alpha (Optional[float]): Value to weigth xerr against yerr. Is used as in l curve calculation. Defaults to 1.
+
+        Returns:
+            xr.DataArray: estimated emissions
+        """        
+        _ = self.get_regression(x, yerr, xerr, with_prior)
+        
+
+        if alpha != 1:
+            result = self.reg.compute_l_curve([alpha])
+            self.fit_result = (
+                result["x_est"][0],
+                result["res"][0],
+                result["rank"][0],
+                result["s"][0]
+            )
+        else:
+            self.fit_result = self.reg.fit()
+        self.predictions_flat = xr.DataArray(
+            data = self.fit_result[0],
+            dims = ["new"],
+            coords = dict(new=self.coords)
+        )
+        self.predictions = self.predictions_flat.unstack("new")
+        return self.predictions
+
+    def compute_l_curve(
+        self, 
+        alpha: Iterable[float],
+        cond: Any=None,
         x: Optional[np.ndarray] = None,
         yerr: Optional[Union[np.ndarray, xr.DataArray, float, list[float]]] = None, 
         xerr: Optional[Union[np.ndarray, list]] = None,
@@ -918,16 +1479,91 @@ class ResultsInversion():
                 y = self.concentrations.values*1e-6, 
                 K = self.footprints_flat.values
             )
-        self.fit_result = reg.fit()
-        self.predictions_flat = xr.DataArray(
-            data = self.fit_result[0],
-            dims = ["new"],
-            coords = dict(new=self.coords)
+        self.l_curve_result = reg.compute_l_curve(alpha, cond)
+        self.alpha = alpha
+        return self.l_curve_result
+
+    def get_land_ocean_error(self, factor: float) -> xr.DataArray:
+        """Selects pixels in the ocean and assignes scaled error by factor 'factor' to those.
+
+        Args:
+            factor (float): Factor for scaling
+
+        Returns:
+            xr.DataArray: Error with scaled values
+        """        
+        errs = xr.DataArray(np.ones_like(self.flux_errs), coords = self.flux_errs.coords) * self.flux_errs.mean()
+        errs_dataframe = errs.to_dataframe(name="flux_errs").reset_index()
+        errs = gpd.GeoDataFrame(
+            errs_dataframe[[self.time_coord, "flux_errs"]], 
+            geometry = gpd.points_from_xy(
+                errs_dataframe.longitude, 
+                errs_dataframe.latitude
+            ), 
+            crs = "EPSG:4326"
         )
-        self.predictions = self.predictions_flat.unstack("new")
-        return self.predictions
+        world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))[["name", "continent", "geometry"]]
+        world.crs = 'epsg:4326'
+        world = world[world.continent != "Seven seas (open ocean)"]
+        ocean_errs = gpd.overlay(errs, world, "difference")
+        ocean_errs = pd.DataFrame(dict(week = ocean_errs.week, flux_errs = ocean_errs.flux_errs, longitude = ocean_errs.geometry.x, latitude = ocean_errs.geometry.y))
+        ocean_errs.flux_errs = ocean_errs.flux_errs*factor
+        ocean_errs = ocean_errs.set_index([self.time_coord, "latitude", "longitude"])
+        errs_dataframe = errs_dataframe.set_index([self.time_coord, "latitude", "longitude"])
+        errs_dataframe.update(ocean_errs)
+        errs = errs_dataframe.to_xarray()["flux_errs"]
+        return errs
+
 
     ################################## Plotting ########################################
+
+    def plot_l_curve(
+        self,
+        ax: Optional[plt.Axes] = None,
+        figsize: Optional[tuple[int, int]] = None,
+        cbar: bool = False,
+        cbar_kwargs: dict = dict(),
+        mark_ind: Optional[int] = None,
+        mark_kwargs: dict = dict(),
+        
+        **kwargs
+    ) -> tuple[plt.Figure, plt.Axes]:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+
+        
+
+        sc = ax.scatter(
+            self.l_curve_result["loss_forward_model"],
+            self.l_curve_result["loss_regularization"],
+            **kwargs)
+        if cbar:
+            fig.colorbar(sc, ax=ax, **cbar_kwargs)
+        if mark_ind:
+            mark_alpha = self.alpha[mark_ind]
+
+            mark_default_kwargs = dict(
+            s=50,
+            label=f"$lambda = {mark_alpha:.4}$",
+            alpha = 0.5,
+            color="grey"
+            )
+            mark_default_kwargs.update(mark_kwargs)
+            x_val = self.l_curve_result["loss_forward_model"][mark_ind]
+            y_val = self.l_curve_result["loss_regularization"][mark_ind]
+            ax.scatter(
+                x_val,
+                y_val,
+                **mark_default_kwargs
+            )
+        ax.set_xlabel("Loss of forward model")
+        ax.set_ylabel("Loss of regularization")
+        ax.set_title("L-curve")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        return fig, ax
 
     def plot_correlation_concentration(
         self, 
@@ -1042,7 +1678,7 @@ class ResultsInversion():
         return fig, ax
 
     def get_emission_v(self):
-        v = max([np.abs(self.flux.mean("week")).max(), np.abs(self.predictions.mean("week")).max()])
+        v = max([np.abs(self.flux.mean(self.time_coord)).max(), np.abs(self.predictions.mean(self.time_coord)).max()])
         return v
 
     def plot_all_total_emissions(
@@ -1083,15 +1719,270 @@ class ResultsInversion():
             _ = self.add_plot_on_map(ax = ax, xarr = footprint({self.time_coord: time_ind}), **default_kwargs)
         return fig, ax
 
+class ResultsInversionEcosystems(ResultsInversion):
+    def __init__(self, 
+        result_path: Pathlike,
+        ecosyst_path: Pathlike,
+        month: str, 
+        flux_path: Pathlike, 
+        time_coarse: Optional[int] = None, 
+        coarsen_boundary: str = "pad",
+        time_unit: Timeunit = "week",
+        boundary: Boundary = None,
+        concentration_key: Concentrationkey = "background_inter",
+        data_outside_month: bool = False,
+        bio_only: bool = False
+        ):
+        self.result_path = Path(result_path)
+        self.ecosyst_path = Path(ecosyst_path)
+        self.results = pd.read_pickle(self.result_path)
+        self.start = np.datetime64(month).astype("datetime64[D]")
+        self.stop = (np.datetime64(month) + np.timedelta64(1, "M")).astype("datetime64[D]")
+        self.flux_path = Path(flux_path)
+        self.time_coarse = time_coarse
+        self.coarsen_boundary = coarsen_boundary
+        self.time_unit = time_unit
+        self.boundary = boundary
+        self.concentration_key = concentration_key
+        self.data_outside_month = data_outside_month
+        self.bio_only = bio_only
+        self.min_time = None
+        self.fit_result: Optional[tuple] = None
+        self.predictions: Optional[xr.DataArray] = None
+        self.predictions_flat: Optional[xr.DataArray] = None
+        self.l_curve_result: Optional[tuple] = None
+        self.alpha: Optional[Iterable[float]] = None
+        self.reg: Optional[bayesinverse.Regression] = None
 
+        self.ecosyst_mask = self.get_ecosyst_mask()
+        self.time_coord, self.isocalendar = self.get_time_coord(self.time_unit)
+        self.footprints, self.concentrations, self.concentration_errs = self.get_footprint_and_measurement(self.concentration_key)
+        self.flux, self.flux_errs = self.get_flux()
 
+    def get_ecosyst_mask(self) -> xr.DataArray:
+        mask = xr.load_dataarray(self.ecosyst_path).rename(dict(Lat="latitude", Long="longitude"))
+        mask = select_boundary(mask, self.boundary)
+        return mask
+    
+    def coarsen_data(
+        self,
+        xarr: xr.DataArray,
+        coarse_func: Union[Callable, tuple[Callable, Callable, Callable], str, tuple[str, str, str]],
+        coarsen_boundary: str,
+        time_coarse: Optional[int] = None
+        ) -> xr.DataArray:
+        if not isinstance(coarse_func, (list, tuple)):
+            coarse_func = [coarse_func]*3
+        name = xarr.name
+        combination = xr.merge([xarr, self.ecosyst_mask]).groupby("bioclass")
+        xarr = self.apply_coarse_func(combination, coarse_func[0])[name]
+        time_class = xarr["time"].dt
+        if self.isocalendar:
+            time_class = time_class.isocalendar()
+        xarr = xarr.groupby(getattr(time_class, self.time_coord))
+        xarr = self.apply_coarse_func(xarr, coarse_func[1])
+        if not time_coarse is None:
+            xarr = xarr.coarsen({self.time_coord: time_coarse}, boundary=coarsen_boundary)
+            xarr = self.apply_coarse_func(xarr, coarse_func[2])
+        return xarr
 
+    def get_footprint_and_measurement(self, 
+        data_key: Concentrationkey
+        ) -> tuple[xr.DataArray, xr.DataArray, xr.DataArray]:
+        min_time = self.start
+        concentrations = []
+        concentration_errs = []
+        measurement_id = []
+        footprints = []
+        for i, result_row in tqdm(self.results.iterrows(), desc="Loading footprints", total=self.results.shape[0]):
+            concentrations.append(result_row["xco2_measurement"] - result_row[data_key])
+            concentration_errs.append(result_row["measurement_uncertainty"])
+            measurement_id.append(i)
+            file = os.path.join(result_row["directory"], "Footprint_total_inter_time.nc")
+            if not os.path.exists(path):
+                continue        
+            footprint: xr.DataArray = xr.load_dataarray(file)
+            footprint = footprint.expand_dims("measurement").assign_coords(dict(measurement=[i]))
+            if not self.data_outside_month:
+                footprint = footprint.where((footprint.time >= self.start) * (footprint.time < self.stop), drop=True)
+            else:
+                min_time = footprint.time.min().values.astype("datetime64[D]") if footprint.time.min() < min_time else min_time
 
+            footprint = select_boundary(footprint, self.boundary)
+            footprint = self.coarsen_data(footprint, "sum", self.coarsen_boundary, None)
+            footprints.append(footprint)
+        self.min_time = min_time
+        concentrations = xr.DataArray(
+            data = concentrations,
+            dims = "measurement",
+            coords = dict(measurement = measurement_id)
+        )
+        concentration_errs  = xr.DataArray(
+            data = concentration_errs,
+            dims = "measurement",
+            coords = dict(measurement = measurement_id)
+        )
+        # merging and conversion from s m^3/kg to s m^2/mol
+        footprints = xr.concat(footprints, dim = "measurement")/100 * 0.044
+        # extra time coarsening for consistent coordinates 
+        if not self.time_coarse is None:
+            footprints = footprints.coarsen({self.time_coord:self.time_coarse}, boundary=self.coarsen_boundary).sum()
+        footprints = footprints.where(~np.isnan(footprints), 0)
+        return footprints, concentrations, concentration_errs
+    
+    def get_flux(self) -> tuple[xr.DataArray, xr.DataArray]:
+        def get_mean(xarr: xr.DataArray, full_arr: xr.DataArray, groupbyarr: xr.core.groupby.DataArrayGroupBy, means: xr.DataArray, ecosystm):
+            for key, values in groupbyarr.groups.items():
+                if all(np.isin(xarr.time.values, full_arr.time[values])):
+                    time = int(key)
+            time_mean = means[self.time_coord][np.argmin(np.abs(time - means[self.time_coord].values))]
+            mask_values = xarr.
 
+        flux_files = []
+        for date in np.arange(self.min_time.astype("datetime64[D]"), self.stop):
+            date_str = str(date).replace("-", "")
+            flux_files.append(self.flux_path.parent / (self.flux_path.name + f"{date_str}.nc"))
+        flux = xr.open_mfdataset(flux_files, drop_variables="time_components").compute()
+        if self.bio_only:
+            flux = flux.bio_flux_opt + flux.ocn_flux_opt
+        else:
+            flux = flux.bio_flux_opt + flux.ocn_flux_opt + flux.fossil_flux_imp + flux.fire_flux_imp
+        flux = select_boundary(flux, self.boundary)
+        
+        flux_mean = self.coarsen_data(flux, "mean", self.coarsen_boundary, self.time_coarse)
+        
+        # Error of mean calculation
+        flux_counts = self.coarsen_data(flux, ["count", "sum", "sum"], self.coarsen_boundary, self.time_coarse)
+        err_func = get_squared_diff_to_mean(self, flux)
+        flux_err = self.coarsen_data(flux, self.lon_coarse, self.lat_coarse, [err_func, "sum"], self.coarsen_boundary, self.time_coarse)
+        flux_err = np.sqrt(flux_err/flux_counts)/np.sqrt(flux_counts)
+        return flux_mean, flux_err
+    
+def calc_point(reg: bayesinverse.Regression, alpha:float) -> tuple[float, float]:
+    """Calculates points on L-curve given a regulatization parameter and the model
 
+    Args:
+        reg (bayesinverse.Regression): Regression model
+        alpha (float): Regularization weight factor
 
+    Returns:
+        tuple[float, float]: Logarithm of losses of forward model and regulatization
+    """    
+    result = reg.compute_l_curve([alpha])
+    return np.log10(result["loss_forward_model"][0]), np.log10(result["loss_regularization"][0])
 
+def euclidean_dist(P1: tuple[float, float], P2: tuple[float, float]) -> float:
+    """Calculates euclidean distanceof two points given in tuples
 
+    Args:
+        P1 (tuple[float, float]): Point 1
+        P2 (tuple[float, float]): Point 2
+
+    Returns:
+        float: distance
+    """    
+    P1 = np.array(P1)
+    P2 = np.array(P2)
+    return np.linalg.norm(P1-P2)**2
+
+def calc_curvature(Pj: tuple[float, float], Pk: tuple[float, float], Pl: tuple[float, float]) -> float:
+    """Calculates menger curvature of circle by three points
+
+    Args:
+        Pj (tuple[float, float]): Point with smallest regularization weight
+        Pk (tuple[float, float]): Point with regularization weight in between 
+        Pl (tuple[float, float]): Point with largest regulatization weight
+
+    Returns:
+        float: curvature
+    """    
+    return 2*(Pj[0] * Pk[1] + Pk[0] * Pl[1] + Pl[0] * Pj[1] - Pj[0] * Pl[1] - Pk[0] * Pj[1] - Pl[0] * Pk[1])/np.sqrt(euclidean_dist(Pj, Pk) * euclidean_dist(Pk, Pl) * euclidean_dist(Pl, Pj))
+
+def get_l2(l1: float, l4: float) -> float:
+    """Calculates position of regularization weight 2 from full boundary
+
+    Args:
+        l1 (float): Regularization weight lower boundary
+        l4 (float): Regularization weight upper boundary
+
+    Returns:
+        float: New regularization weight in between
+    """      
+    phi = (1 + np.sqrt(5))/2
+    
+    x1 = np.log10(l1)
+    x4 = np.log10(l4)
+    x2 = (x4 + phi * x1) / (1 + phi)
+    return 10**x2
+
+def get_l3(l1: float, l2: float, l4: float) -> float:
+    """Calculates position of regularization weight 3 other values
+
+    Args:
+        l1 (float): Regularization weight lower boundary
+        l2 (float): Regularization weight in between
+        l4 (float): Regularization weight upper boundary
+
+    Returns:
+        float: New regularization weight
+    """    
+    return 10**(np.log10(l1) + (np.log10(l4) - np.log10(l2)))
+
+def optimal_lambda(reg: bayesinverse.Regression, interval: tuple[float, float], threshold: float):    
+    """Find optiomal value for weigthing factor in regression. Based on https://doi.org/10.1088/2633-1357/abad0d
+
+    Args:
+        reg (bayesinverse.Regression): regression Model
+        interval (tuple[float, float]): Values of weightung factors. Values within to search 
+        threshold (float): Search stops if normalized search interval (upper boundary - lower boundary)/ upper boundary is smaller then threshold
+    """    
+    
+    l1 = interval[0]
+    l4 = interval[1]
+    l2 =  get_l2(l1, l4)
+    l3 = get_l3(l1, l2, l4)
+    l_list = [l1, l2, l3, l4]
+
+    p_list = []
+    for l in l_list:
+        p_list.append(calc_point(reg, l))
+    
+    while (l_list[3] - l_list[0]) / l_list[3] >= threshold:
+        c2 = calc_curvature(*p_list[:3])
+        c3 = calc_curvature(*p_list[1:])
+        # Find convex part of curve
+        while c3 <= 0:
+            l_list[3] = l_list[2]
+            l_list[2] = l_list[1]
+            p_list[3] = p_list[2]
+            p_list[2] = p_list[1]
+            l_list[1] = get_l2(l_list[0], l_list[3])
+            p_list[1] = calc_point(reg, l_list[1])
+            c3 = calc_curvature(*p_list[1:])
+            print(l_list[0], l_list[3])
+        # Approach higher curvature
+        if c2 > c3:
+            # Store current guess
+            l = l_list[1]
+            # Set new boundaries
+            l_list[3] = l_list[2]
+            l_list[2] = l_list[1]
+            p_list[3] = p_list[2]
+            p_list[2] = p_list[1]
+            l_list[1] = get_l2(l_list[0], l_list[3])
+            p_list[1] = calc_point(reg, l_list[1])
+        else:
+            # Store current guess
+            l = l_list[2]
+            # Set new boundaries
+            l_list[0] = l_list[1]
+            p_list[0] = p_list[1]
+            l_list[1] = l_list[2]
+            p_list[1] = p_list[2]
+            l_list[2] = get_l3(l_list[0], l_list[1], l_list[3])
+            p_list[2] = calc_point(reg, l_list[2])
+        print(l)
+    return l
 
 if __name__ == "__main__":
 
@@ -1101,7 +1992,7 @@ if __name__ == "__main__":
         flux_path="/work/bb1170/static/CT2019/Flux3hour_1x1/CT2019B.flux1x1.",
         lon_coarse=5, 
         lat_coarse=5, 
-         time_coarse = "day",
+        time_coarse = None,
         boundary=[110.0, 155.0, -45.0, -10.0],
         data_outside_month=True
     )
