@@ -171,6 +171,16 @@ def load_ct_data(
     startdate: Union[np.datetime64, datetime],
     enddate: Union[np.datetime64, datetime],
 ) -> xr.DataArray:
+    """Loads CT2019B flux data
+
+    Args:
+        ct_file (str): String describing file names of CT2019B flux data before time stamp, e.g: '/path/to/data/CT2019B.flux1x1.
+        startdate (Union[np.datetime64, datetime]): Start of time frame to load data of 
+        enddate (Union[np.datetime64, datetime]): End of time frame to load data of 
+
+    Returns:
+        xr.DataArray: Loaded flux data
+    """    
     first = True
     for date in pd.date_range(startdate, enddate):
         ct_single_file = (
@@ -206,6 +216,14 @@ def load_ct_data(
 
 
 def get_fp_array(fp_dataset: xr.Dataset) -> xr.DataArray:
+    """Extracts and formats footprint data
+
+    Args:
+        fp_dataset (xr.Dataset): Footprint data
+
+    Returns:
+        xr.DataArray: Formated dataarray of footprint
+    """    
     with dask.config.set(**{"array.slicing.split_large_chunks": True}):
         fd_array = fp_dataset.spec001_mr[0, :, :, 0, :, :]
     dt = np.timedelta64(90, "m")
@@ -218,6 +236,16 @@ def get_fp_array(fp_dataset: xr.Dataset) -> xr.DataArray:
 def combine_flux_and_footprint(
     flux: xr.DataArray, footprint: xr.DataArray, chunks: dict = None
 ) -> xr.Dataset:
+    """Computes enhancement for each release in footprint data
+
+    Args:
+        flux (xr.DataArray): Carbon Tracker Fluxes
+        footprint (xr.DataArray): Footprint data
+        chunks (dict, optional): Chunks for dask to allow faster with smaller memory demand. Defaults to None.
+
+    Returns:
+        xr.Dataset: Enhancements for each layer
+    """
     if chunks is not None:
         footprint = footprint.chunk(chunks=chunks)
         flux = flux.chunk(chunks=chunks)
@@ -243,7 +271,19 @@ def calc_enhancement(
     boundary: list[float, float, float, float] = None,
     chunks: dict = None,
 ) -> np.ndarray:
+    """Calculates enhancement using CT2019B fluxes and FLEXPART output.
 
+    Args:
+        fp_data (xr.Dataset): FLEXPART output dataset
+        ct_file (str): String describing file names of CT2019B flux data before time stamp, e.g: '/path/to/data/CT2019B.flux1x1.
+        startdate (Union[np.datetime64, datetime]):  Start of time frame to load data of
+        enddate (Union[np.datetime64, datetime]):  End of time frame to load data of
+        boundary (list[float, float, float, float], optional): boundary to calculate enhancement for [longitude left, longitude right, latitude lower, latitude upper]. Defaults to None.
+        chunks (dict, optional): Chunks for dask to allow faster with smaller memory demand. Defaults to None.
+
+    Returns:
+        np.ndarray: Array of enhancement for each release of FLEXPART run
+    """    
     # test the right order of dates
     assert enddate > startdate, "The startdate has to be before the enddate"
 
@@ -266,6 +306,15 @@ def calc_enhancement(
 
 
 def load_nc_partposit(dir_path: str, chunks: dict = None) -> xr.Dataset:
+    """Loads partposit netCDF files in directory into Dataset
+
+    Args:
+        dir_path (str): Directory from which to load dataset
+        chunks (dict, optional): Chucks to use for loaded dataset (dask). Defaults to None.
+
+    Returns:
+        xr.Dataset: Loaded dataset
+    """    
     files = []
     for file in os.listdir(dir_path):
         if "partposit" in str(file) and ".nc" in str(file):
@@ -406,6 +455,8 @@ class TcconMeasurement(ColumnMeasurement):
     def pressure_weighted_sum(self, dataset: xr.Dataset, data_var: str, with_averaging_kernel:bool) -> xr.DataArray:
         """Carries out pressure weighted sum with additional option to use averaging kernel"""
         dataarray = dataset[data_var]
+        if np.isnan(dataarray[0]):
+            dataarray[0] = dataarray[1]
         if with_averaging_kernel: 
             averaging_kernel = self.data.ak_co2
             not_levels = [k for k in dataarray.dims if k != "prior_Height"]
@@ -416,7 +467,7 @@ class TcconMeasurement(ColumnMeasurement):
             dataset = dataset.drop("ak_co2")
             dataset = dataset.assign(dict(ak_co2 = averaging_kernel))
             dataarray = dataarray * dataset.ak_co2 + dataset.prior_co2 * (1 - dataset.ak_co2)
-        pressure_weights = (dataset.prior_Pressure.values - np.pad(dataset.prior_Pressure.values, (0, 1), "constant")[1:])/self.surface_pressure()
+        pressure_weights = (dataset.prior_Pressure.values - np.pad(dataset.prior_Pressure.values, (0, 1), "constant")[1:])/dataset.prior_Pressure.values[0]
         pressure_weights = xr.DataArray(pressure_weights, dict(prior_Height = dataset.prior_Height.values))
         pw_dataarray = dataarray * pressure_weights
         result = pw_dataarray.sum(dim = "prior_Height")
@@ -520,6 +571,7 @@ class AcosMeasurement(ColumnMeasurement):
         return 22 + 273.15
 
 class FlexDataset2:
+    """Class for postprocessing FLEXPART output. Includes plotting, enhancement and background calculation and metadata readout"""    
     def __init__(self, directory: str, **kwargs):
         nc_path: str = self.get_nc_path(directory)
         self._nc_path: str = nc_path
@@ -572,7 +624,16 @@ class FlexDataset2:
         
         self._last_boundary: Optional[list[float]] = None
 
-    def get_nc_path(self, directory: str) -> str:
+    @staticmethod
+    def get_nc_path(directory: str) -> str:
+        """Finds file in directory that contains footprint data
+
+        Args:
+            directory (str): Directory to search in 
+
+        Returns:
+            str: Path of file with footprints
+        """        
         nc_file = None
         for filename in os.listdir(directory):
             if "grid_time" in filename and ".nc" in filename:
@@ -585,6 +646,11 @@ class FlexDataset2:
         return os.path.join(directory, nc_file)
 
     def get_metadata(self):
+        """Reads out FLEXPART output directory to extract metadata
+
+        Returns:
+            tuple[datetime, datetime, dict]: Start and stop of simulation, and information abouut releases.
+        """        
         # read things from the header and RELEASES.namelist
         with open(os.path.join(self._dir, "header_txt"), "r") as f:
             lines = f.readlines()
@@ -754,6 +820,18 @@ class FlexDataset2:
         force_calculation: bool = False,
         chunks: dict = dict(time=10)
         ) -> list[float]:
+        """Calculates enhancement for each layer (release) of the footprint
+
+        Args:
+            ct_file (str, optional): String describing file names of CT2019B flux data before time stamp, e.g: '/path/to/data/CT2019B.flux1x1.'. Defaults to None.
+            boundary (list[float, float, float, float], optional): boundary to calculate enhancement for [longitude left, longitude right, latitude lower, latitude upper]. Defaults to None.
+            allow_read (bool, optional): Switch to allow reading the result fro the memory if possible. Defaults to True.
+            force_calculation (bool, optional): Switch to force an new calculation. Defaults to False.
+            chunks (dict, optional): Chucks to use for loaded dataset (dask). Defaults to dict(time=10).
+
+        Returns:
+            list[float]: Enhancements per layer
+        """        
         mode = self.get_result_mode(self._enhancement_layer, "enhancement_layer", allow_read, force_calculation, boundary)
         if mode == "from_instance":
             pass
@@ -780,6 +858,16 @@ class FlexDataset2:
         boundary: list[float, float, float, float] = None,
         force_calculation: bool = False,
     ) -> list[float]:
+        """Calculates background for each layer (release) of the released particles.
+
+        Args:
+            allow_read (bool, optional): Switch to allow reading the result fro the memory if possible. Defaults to True.
+            boundary (list[float, float, float, float], optional): boundary to calculate background for [longitude left, longitude right, latitude lower, latitude upper]. Defaults to None.
+            force_calculation (bool, optional): Switch to force an new calculation. Defaults to False.
+
+        Returns:
+            list[float]: Backgrounds per layer
+        """    
         mode = self.get_result_mode(self._background_layer, "background_layer", allow_read, force_calculation, boundary)
         if mode == "from_instance":
             pass
@@ -807,6 +895,18 @@ class FlexDataset2:
         force_calculation: bool = False,
         chunks: dict = dict(time=10)
     ) -> list[float]:
+        """Calculates total CO2 value for each layer (release) of the footprint
+
+        Args:
+            ct_file (str, optional): String describing file names of CT2019B flux data before time stamp, e.g: '/path/to/data/CT2019B.flux1x1.'. Defaults to None.
+            boundary (list[float, float, float, float], optional): boundary to calculate CO2 for [longitude left, longitude right, latitude lower, latitude upper]. Defaults to None.
+            allow_read (bool, optional): Switch to allow reading the result fro the memory if possible. Defaults to True.
+            force_calculation (bool, optional): Switch to force an new calculation. Defaults to False.
+            chunks (dict, optional): Chucks to use for loaded dataset (dask). Defaults to dict(time=10).
+
+        Returns:
+            list[float]: Enhancements per layer
+        """        
         mode = self.get_result_mode(self._total_layer, "total_layer", allow_read, force_calculation, boundary)
         if mode == "from_instance":
             pass
