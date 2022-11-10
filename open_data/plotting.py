@@ -142,12 +142,18 @@ class Sensitivity():
         band_style: str = "percent",
         band_vals: list[float] = None, 
         band_colors: list[str] = ["orange", "red"],
+        band_kwargs: dict = {},
+        line_kwargs: dict = {},
+        scatter_kwargs: dict = {},
         ax: plt.Axes = None,
         cities: list[str] = ["darwin", "wollongong"], 
         markers: list[str] = ["*", "x"], 
         types: list[str] = ["unit", "pressure"], 
         coloring: list[str] = ["blue", "red"],
-        figsize: tuple[int, int] = None
+        figsize: tuple[int, int] = None,
+        show_lines: bool = True,
+        show_bands: bool = True,
+        show_marker_labels: bool = True,
         ) -> tuple[plt.Figure, plt.Axes]:
         """Function to plot enhancement background or xco2 values in different ways.
 
@@ -172,6 +178,17 @@ class Sensitivity():
             fig, ax = plt.subplots(figsize=figsize)
         else:
             fig = ax.get_figure()
+
+        default_band_kwargs = dict(alpha=0.3)
+        default_band_kwargs.update(band_kwargs)
+        default_line_kwargs = dict(linestyle="dashed")
+        default_line_kwargs.update(line_kwargs)
+        default_scatter_kwargs = dict()
+        default_scatter_kwargs.update(scatter_kwargs)
+
+
+        city_names = dict(wollongong="Wollongong", darwin="Darwin")
+
         for i, city in enumerate(cities):
             marker = markers[i]
             for j, typ in enumerate(types):
@@ -207,7 +224,8 @@ class Sensitivity():
                     ylabel = r"$\frac{value - value[-1]}{mean}$"
                     v = (v - v[-1])/np.mean(v)*100
                     bar_center = 0
-                ax.scatter(p, v, marker=marker, c=color, label=f"{typ} {city}")
+                label = f"{typ} {city_names[city]}" if show_marker_labels else None
+                ax.scatter(p, v, marker=marker, c=color, label=label, **scatter_kwargs)
 
 
 
@@ -220,7 +238,7 @@ class Sensitivity():
                         if i != len(cities)-1 or j != len(types)-1:
                             continue 
                     xlim = ax.get_xlim()
-                    ax.hlines(bar_center, *xlim, color="grey", linestyle="dashed")
+                    ax.hlines(bar_center, *xlim, color="grey", **default_line_kwargs)
                     if band_style == "percent":
                         last_err = 0
                         for i, band_val in enumerate(band_vals):
@@ -228,10 +246,12 @@ class Sensitivity():
                                 err = band_val
                             else: 
                                 err = v0.mean() * band_val/100
-                            ax.fill_between([*xlim], bar_center + last_err, bar_center + err, color=band_colors[i], alpha=0.3, label=f"{band_val} % error band")
-                            ax.fill_between([*xlim], bar_center - err, bar_center - last_err, color=band_colors[i],alpha=0.3)
-                            ax.hlines(bar_center + err, *xlim, color=band_colors[i], linestyle="dashed")
-                            ax.hlines(bar_center - err, *xlim, color=band_colors[i], linestyle="dashed")
+                            if show_bands:
+                                ax.fill_between([*xlim], bar_center + last_err, bar_center + err, color=band_colors[i], **default_band_kwargs, label=f"{band_val} % error band")
+                                ax.fill_between([*xlim], bar_center - err, bar_center - last_err, color=band_colors[i], **default_band_kwargs)
+                            if show_lines:
+                                ax.hlines(bar_center + err, *xlim, color=band_colors[i], **default_line_kwargs)
+                                ax.hlines(bar_center - err, *xlim, color=band_colors[i], **default_line_kwargs)
                             last_err = err
                         ax.set_xlim(*xlim)
                     
@@ -242,10 +262,12 @@ class Sensitivity():
                                 err = band_val/v0.mean()
                             else:
                                 err = band_val
-                            ax.fill_between([*xlim], bar_center + last_err, bar_center + err, color=band_colors[i], alpha=0.3, label=f"{band_val} ppm error band")
-                            ax.fill_between([*xlim], bar_center - err, bar_center - last_err, color=band_colors[i],alpha=0.3)
-                            ax.hlines(bar_center + err, *xlim, color=band_colors[i], linestyle="dashed")
-                            ax.hlines(bar_center - err, *xlim, color=band_colors[i], linestyle="dashed")
+                            if show_bands:
+                                ax.fill_between([*xlim], bar_center + last_err, bar_center + err, color=band_colors[i], **default_band_kwargs, label=f"{band_val} ppm error band")
+                                ax.fill_between([*xlim], bar_center - err, bar_center - last_err, color=band_colors[i], **default_band_kwargs)
+                            if show_lines:
+                                ax.hlines(bar_center + err, *xlim, color=band_colors[i], **default_line_kwargs)
+                                ax.hlines(bar_center - err, *xlim, color=band_colors[i], **default_line_kwargs)
                             last_err = err
                         ax.set_xlim(*xlim)
                         
@@ -278,6 +300,27 @@ class Sensitivity():
             fp_sum.append(fd.footprint.dataarray.sel(pointspec=slice(0,i)).sum().compute())
         return heights, fp_sum
 
+    @cache
+    def calc_footprint_layer_sum_vs_release_height(self, city: str, typ: str, file_ind: int=-1):
+        """Calculation sum of footprints from 0 to each height value in the
+
+        Args:
+            city (str): 
+            typ (str): _description_
+            file_ind (int, optional): _description_. Defaults to -1.
+
+        Returns:
+            _type_: _description_
+        """        
+        file = str(self.data["directories"][city][typ][file_ind])
+        fd = FlexDataset2(file)
+        heights = (fd.footprint.dataset.RELZZ2.values + fd.footprint.dataset.RELZZ1)/2
+        heights = heights.compute()
+        fp_sum = []
+        for i in fd.footprint.dataset.pointspec.values:
+            fp_sum.append(fd.footprint.dataarray.sel(pointspec=i).sum().compute())
+        return heights, fp_sum
+
     def footprint_sum_vs_release_height(
         self, 
         city: str, 
@@ -297,10 +340,35 @@ class Sensitivity():
         fp_sum_arr = fp_sum_arr/max(fp_sum_arr)*100
         ax.plot(heights, fp_sum_arr, **kwargs)
         ax.grid()
-        ax.set_xlabel("height [m]")
+        ax.set_xlabel("Level height [m]")
         ax.set_ylabel("Percentage of included footprint [%]")
         ax.set_title(f"Effect of release height ({city}, {typ})")
         return fig, ax
+
+    def footprint_layer_sum_vs_release_height(
+        self, 
+        city: str, 
+        typ: str, 
+        file_ind: int=-1, 
+        ax: plt.Axes=None, 
+        figsize: tuple[int, int] = None, 
+        **kwargs
+        ) -> tuple[plt.Figure, plt.Axes]:
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        heights, fp_sum = self.calc_footprint_layer_sum_vs_release_height(city, typ, file_ind)
+        fp_sum_arr = np.array(fp_sum)
+        fp_sum_arr = fp_sum_arr/np.sum(fp_sum_arr)*100
+        ax.plot(heights, fp_sum_arr, **kwargs)
+        ax.grid()
+        ax.set_xlabel("Level height [m]")
+        ax.set_ylabel("Contribution to total footprint [%]")
+        ax.set_title(f"Effect of release height ({city}, {typ})")
+        return fig, ax
+
 
     def particles_leaving_domain(
         self, 
@@ -378,6 +446,77 @@ class Sensitivity():
         ax.set_xlim(*xlim)
         #ax.legend()
         return fig, ax
+
+    def particles_in_domain(
+        self, 
+        city: str, 
+        typ: str, 
+        bins:int = 10,
+        range: tuple|list = None,
+        line: bool = True,
+        file_ind: int=-1, 
+        vline: int = 10,
+        vline_kwargs: dict = dict(),
+        border_list: list[float] = [0.75], 
+        color_list: list[str] = ["grey"],
+        linestyle_list: list[str] = ["dashed"],
+        border_kwargs: dict = dict(),
+        ax: plt.Axes=None, 
+        figsize: tuple[int, int] = None, 
+        fix_xaxis: bool = True,
+        **kwargs
+        ) -> tuple[plt.Figure, plt.Axes]: 
+        
+        default_vline_kwargs = dict(color="red", label=f"{vline} days after simulation begin")
+        default_vline_kwargs.update(vline_kwargs)
+        vline_kwargs = default_vline_kwargs
+
+        hist_kwargs = dict()
+        line_kwargs = dict()
+        if line:
+            line_kwargs.update(kwargs)
+        else:
+            hist_kwargs.update(kwargs)
+
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+
+        file = str(self.data["directories"][city][typ][file_ind])
+        fd = FlexDataset2(file)
+        fd.trajectories.load_endpoints()
+        end = fd.trajectories.endpoints
+        times = end.time
+        days = times.values.astype("datetime64[D]")
+        runtime = days.max() - days
+        runtime = runtime.astype(int)
+        y, x, hist = ax.hist(runtime, cumulative=-1, density=True, bins=14)
+        y = y*100
+        if line:
+            hist.remove()
+            ax.plot(x[:-1], y, **line_kwargs)
+
+        ax.set_xlabel("Simulated time [days]")
+        ax.set_ylabel("Particels in the domain [%]")
+        ax.set_title(f"Particles that left domain over time ({city}, {typ})")
+        
+        ylim = ax.get_ylim()
+        xlim = ax.get_xlim()
+        
+        if not vline is None:
+            ax.vlines(vline, *ylim, **vline_kwargs)
+            ax.set_ylim(*ylim)
+
+
+        for i, border in enumerate(border_list):
+            color = color_list[i] if len(color_list) == len(border_list) else color_list[0]
+            linestyle = linestyle_list[i] if len(linestyle_list) == len(border_list) else linestyle_list[0]
+            ax.hlines(border, *xlim, color=color, linestyle=linestyle, label=f"{border*100}%", **border_kwargs)
+        ax.set_xlim(*xlim)
+        #ax.legend()
+        return fig, ax
         
 Pathlike = Union[Path,str]
 
@@ -422,10 +561,13 @@ class ResultsConcentrations():
         enh_neg_kwargs: dict = dict(),
         plot_bgd: bool = True,
         bgd_kwargs: dict = dict(),
+        plot_model: bool = True,
         figsize: tuple[int, int] = (7,5),
         detrend: bool = False,
         ct_file: Union[Path, str] = None,
-        ct_kwargs: dict() = dict()
+        ct_kwargs: dict() = dict(),
+        old_ct_data: bool = False
+
         ) -> tuple[plt.Figure, plt.Axes]:
         """PLots monthly average of xco2 prediction in comparison to measurement data. 
 
@@ -442,6 +584,7 @@ class ResultsConcentrations():
             enh_neg_kwargs (dict, optional): Kwargs for negative enhancement. Defaults to dict().
             plot_bgd (bool, optional): Wether to plot background. Defaults to True.
             bgd_kwargs (dict, optional): Kwargs for background errorbar plot. Defaults to dict().
+            plot_model (bool): Wether to plot model. Defaults to True.
             figsize (tuple[int, int], optional): Figsize. Defaults to (7,5).
             ct_file (Union[Path, str]): Path to Carbon tracker file of monthly average values.
 
@@ -511,7 +654,8 @@ class ResultsConcentrations():
         if plot_measurement:
             ax.errorbar(xvals, data[measurement_key], **measurement_kw)
         #ax.plot(xvals, data.xco2_measurement, color=measurement_color)
-        ax.errorbar(xvals, data[xco2_key], **model_kw)
+        if plot_model:
+            ax.errorbar(xvals, data[xco2_key], **model_kw)
         #ax.plot(xvals, data.xco2, color=model_color, )
 
         #ylim = ax.get_ylim()
@@ -527,11 +671,16 @@ class ResultsConcentrations():
             ax.fill_between(xvals_interp, bgd_interp, xco2_interp, where=enh_interp > 0, **enh_kw, **enh_pos_kw)
             ax.fill_between(xvals_interp, bgd_interp, xco2_interp, where=enh_interp < 0, **enh_kw, **enh_neg_kw)
         if not ct_file is None:
-            co2_key = "CO2"
             ct_data = pd.read_pickle(ct_file)
-            ct_data = ct_data[np.isin(ct_data.MonthDate.to_numpy().astype("datetime64[M]"), data.month.values)]
+            if old_ct_data:
+                co2_key = "CO2"
+                time_key = "MonthDate"
+            else:
+                co2_key = "xco2"
+                time_key = "time"
+            ct_data = ct_data[np.isin(ct_data[time_key].to_numpy().astype("datetime64[M]"), data.month.values)]
             if detrend:
-                ct_data = detrend_hawaii(ct_data, "CO2", "MonthDate")
+                ct_data = detrend_hawaii(ct_data, co2_key, time_key)
                 co2_key = co2_key + "_detrend"
             ax.errorbar(xvals, ct_data[co2_key], **ct_kw)
 
@@ -721,7 +870,7 @@ def optimal_lambda(reg: bayesinverse.Regression, interval: tuple[float, float], 
             l_list[1] = get_l2(l_list[0], l_list[3])
             p_list[1] = calc_point(reg, l_list[1])
             c3 = calc_curvature(*p_list[1:])
-            print(l_list[0], l_list[3])
+            # print(l_list[0], l_list[3])
         # Approach higher curvature
         if c2 > c3:
             # Store current guess
@@ -743,7 +892,7 @@ def optimal_lambda(reg: bayesinverse.Regression, interval: tuple[float, float], 
             p_list[1] = p_list[2]
             l_list[2] = get_l3(l_list[0], l_list[1], l_list[3])
             p_list[2] = calc_point(reg, l_list[2])
-        print(l)
+        # print(l)
     return l
 
 
