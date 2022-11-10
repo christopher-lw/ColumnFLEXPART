@@ -1,6 +1,7 @@
 import xarray as xr
 import numpy as np
 import pandas as pd
+from datetime import datetime
 from tqdm.auto import tqdm
 import os
 import matplotlib.pyplot as plt
@@ -34,7 +35,6 @@ class Inversion():
         boundary: Boundary = None,
         concentration_key: Concentrationkey = "background_inter",
         data_outside_month: bool = False,
-        bio_only: bool = False
     ):
         """Calculates inversion of footprints and expected concentrations and offers plotting possibilities.
 
@@ -48,7 +48,6 @@ class Inversion():
             boundary (Boundary, optional): region of footprint to use. Defaults to None.
             concentration_key (Concentrationkey, optional): Data with which difference to measurement xco2 is calculated. Defaults to "background_inter".
             data_outdside_month (bool, optional): Wether to also use footprint data outsinde of target month. Defaults to False.
-            bio_only (bool, optional): Whether to only use emission data of biospheric fluxes (no fire and fossile fuel). Defaults to Flase
         """
         self.spatial_valriables = spatial_valriables
         self.result_path = Path(result_path)
@@ -62,11 +61,12 @@ class Inversion():
         self.boundary = boundary
         self.concentration_key = concentration_key
         self.data_outside_month = data_outside_month
-        self.bio_only = bio_only
         self.min_time = None
         self.fit_result: Optional[tuple] = None
         self.predictions: Optional[xr.DataArray] = None
         self.predictions_flat: Optional[xr.DataArray] = None
+        self.prediction_errs: Optional[xr.DataArray] = None
+        self.prediction_errs_flat: Optional[xr.DataArray] = None
         self.l_curve_result: Optional[tuple] = None
         self.alpha: Optional[Iterable[float]] = None
         self.reg: Optional[bayesinverse.Regression] = None
@@ -195,7 +195,7 @@ class Inversion():
         footprints = footprints.where(~np.isnan(footprints), 0)
         return footprints, concentrations, concentration_errs
 
-    def get_flux(self) -> tuple[xr.DataArray,xr.DataArray]:
+    def get_flux(self, bio_only=False, no_bio=False) -> tuple[xr.DataArray,xr.DataArray]:
         """Loads fluxes and its errors and coarsens to parameters given in __init__
 
         Returns:
@@ -206,8 +206,11 @@ class Inversion():
             date_str = str(date).replace("-", "")
             flux_files.append(self.flux_path.parent / (self.flux_path.name + f"{date_str}.nc"))
         flux = xr.open_mfdataset(flux_files, drop_variables="time_components").compute()
-        if self.bio_only:
+        assert not (bio_only and no_bio), "Choose either 'bio_only' or 'no_bio' not both"
+        if bio_only:
             flux = flux.bio_flux_opt + flux.ocn_flux_opt
+        elif no_bio:
+            flux = flux.fossil_flux_imp
         else:
             flux = flux.bio_flux_opt + flux.ocn_flux_opt + flux.fossil_flux_imp + flux.fire_flux_imp
         flux = select_boundary(flux, self.boundary)
@@ -283,13 +286,14 @@ class Inversion():
                 K = self.footprints_flat.values, 
                 x_prior = x_prior, 
                 x_covariance = flux_errs**2, 
-                y_covariance = concentration_errs*1e-6**2
-                
+                y_covariance = concentration_errs*1e-6**2, 
+                alpha = alpha
             )
         else:
             self.reg = bayesinverse.Regression(
                 y = self.concentrations.values*1e-6, 
-                K = self.footprints_flat.values
+                K = self.footprints_flat.values,
+                alpha = alpha
             )
         return self.reg
 
@@ -299,7 +303,7 @@ class Inversion():
         yerr: Optional[Union[np.ndarray, xr.DataArray, float, list[float]]] = None, 
         xerr: Optional[Union[np.ndarray, list]] = None,
         with_prior: Optional[bool] = True,
-        alpha: float = 1,
+        alpha: float = None,
         ) -> xr.DataArray:
         """Uses bayesian inversion to estiamte emissions.
 
@@ -312,25 +316,21 @@ class Inversion():
         Returns:
             xr.DataArray: estimated emissions
         """        
-        _ = self.get_regression(x, yerr, xerr, with_prior)
+        _ = self.get_regression(x, yerr, xerr, with_prior, alpha)
         
-
-        if alpha != 1:
-            result = self.reg.compute_l_curve([alpha])
-            self.fit_result = (
-                result["x_est"][0],
-                result["res"][0],
-                result["rank"][0],
-                result["s"][0]
-            )
-        else:
-            self.fit_result = self.reg.fit()
+        self.fit_result = self.reg.fit()
         self.predictions_flat = xr.DataArray(
             data = self.fit_result[0],
             dims = ["new"],
             coords = dict(new=self.coords)
         )
         self.predictions = self.predictions_flat.unstack("new")
+        self.prediction_errs_flat = xr.DataArray(
+            data = np.sqrt(np.diag(self.get_posterior_covariance())),
+            dims = ["new"],
+            coords = dict(new=self.coords)
+        )
+        self.prediction_errs = self.prediction_errs_flat.unstack("new")
         return self.predictions
 
     def compute_l_curve(
@@ -368,6 +368,75 @@ class Inversion():
             xr.DataArray: DataArray on latitude longitude grid
         """        
         raise NotImplementedError
+
+    def get_filtered_weeks(self, xarr):
+        assert self.time_coord == "week" and self.time_coarse in [None, 1], "filtering of weeks only psooible with settings time_coord=week, time_coarse=1 or time_coarse=None"
+        start_day = self.start.astype(datetime).isoweekday()
+        end_day = self.stop.astype(datetime).isoweekday()    
+        drop_start = start_day > 4
+        drop_end = end_day < 5 
+        offset_flag = False
+        if 1 in xarr.week:
+            offset_flag = True
+            xarr = xarr.assign_coords(week = (xarr.week -1 + 20) % 53)
+        
+        if start_day == 1:
+            drop_start = True
+
+        if end_day != 1 and drop_end:
+            xarr = xarr.isel(week = xarr.week != xarr.week.max())
+
+        if (len(xarr.week) == 5 and drop_start) or (len(xarr.week) == 6 and not drop_start) :
+            xarr = xarr.isel(week = xarr.week != xarr.week.min())
+        elif len(xarr.week) == 6 and drop_start:
+            xarr = xarr.isel(week = ~np.isin(xarr.week, np.sort(xarr.week)[:2]))
+        elif len(xarr.week) == 7:
+            xarr = xarr.isel(week = ~np.isin(xarr.week, np.sort(xarr.week)[:2]))
+        
+        if offset_flag:
+            xarr = xarr.assign_coords(week = (xarr.week - 20) % 53 + 1)
+
+        return xarr.week
+    
+    def get_averaging_kernel(self, reduce: bool=False, only_cols: bool=False):
+        ak = self.reg.get_averaging_kernel()
+        if reduce:
+            weeks = self.flux.week.values
+            filtered_weeks = self.get_filtered_weeks(self.flux).values
+            mask = np.ones((len(self.flux.week), self.n_eco))
+            mask[~np.isin(weeks, filtered_weeks)] = 0
+            mask = mask.flatten().astype(bool)
+            ak = ak[mask]
+            if not only_cols:
+                ak = ak[:, mask]
+        return ak
+
+    def get_correlation(self, reduce: bool=False, only_cols: bool=False):
+        corr = self.reg.get_correlation()
+        if reduce:
+            weeks = self.flux.week.values
+            filtered_weeks = self.get_filtered_weeks(self.flux).values
+            mask = np.ones((len(self.flux.week), self.n_eco))
+            mask[~np.isin(weeks, filtered_weeks)] = 0
+            mask = mask.flatten().astype(bool)
+            corr = corr[mask]
+            if not only_cols:
+                corr = corr[:, mask]
+        return corr
+
+    def get_posterior_covariance(self, reduce: bool=False, only_cols: bool=False):
+        cov = self.reg.get_posterior_covariance()
+        if reduce:
+            weeks = self.flux.week.values
+            filtered_weeks = self.get_filtered_weeks(self.flux).values
+            mask = np.ones((len(self.flux.week), self.n_eco))
+            mask[~np.isin(weeks, filtered_weeks)] = 0
+            mask = mask.flatten().astype(bool)
+            cov = cov[mask]
+            if not only_cols:
+                cov = cov[:, mask]
+        return cov
+
     ################################## Plotting ########################################
 
     def plot_l_curve(
@@ -491,19 +560,21 @@ class Inversion():
         return fig, ax
 
     @staticmethod
-    def add_plot_on_map(ax: plt.Axes, xarr: xr.DataArray, **kwargs):
+    def add_plot_on_map(ax: plt.Axes, xarr: xr.DataArray, map_kwargs: dict = dict(), **kwargs):
         xarr.plot(ax = ax, x="longitude", y="latitude", **kwargs)
-        FlexDataset2.add_map(ax = ax)
+        FlexDataset2.add_map(ax = ax, **map_kwargs)
         return ax
 
     def plot_total_emission(
         self,
         data_type: Literal["prior", "predicted", "difference"],
         ax: plt.Axes = None,
+        week: Optional[int] = None,
         figsize: tuple[int, int] = None,
+        filter_weeks: bool = True,
+        map_kwargs: dict = dict(),
         **kwargs
     ) -> tuple[plt.Figure, plt.Axes]:
-
         if data_type == "prior":
             data = self.flux
             title = "Prior emissions"
@@ -515,7 +586,12 @@ class Inversion():
             title = "Predicted minus Prior emissions"
         else:
             raise ValueError(f'"data_type" can oly be "prior", "predicted", "difference" not {data_type}')
-        data = self.map_on_grid(data).mean(self.time_coord)
+        if filter_weeks:
+            data = data.sel(week = self.get_filtered_weeks(data))
+        if not week is None:
+            data = data.sel(week = week).expand_dims("week")
+        data = self.map_on_grid(data)
+        data = data.mean(self.time_coord) if self.time_coord in data.coords else data
         v = np.abs(data).max()
         default_kwargs = dict(cmap = "bwr", vmin = -v, vmax = v, cbar_kwargs=dict(label=r"mol s$^{-1}$ m$^{-2}$"))
         default_kwargs.update(kwargs)
@@ -524,7 +600,7 @@ class Inversion():
         else:
             fig = ax.get_figure()
         
-        ax = self.add_plot_on_map(ax=ax, xarr=data, **default_kwargs)
+        ax = self.add_plot_on_map(ax=ax, xarr=data, map_kwargs=map_kwargs, **default_kwargs)
         ax.set_title(title)
         return fig, ax
 
@@ -537,7 +613,10 @@ class Inversion():
         self,
         axes: tuple[plt.Axes, plt.Axes, plt.Axes] = None,
         figsize: tuple[int, int] = (16, 3),
+        week: Optional[int] = None,
         emission_kwargs: dict = dict(),
+        filter_weeks: bool = True,
+        map_kwargs: dict = dict(),
         **kwargs
     ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes]]:
         if axes is None:
@@ -547,9 +626,9 @@ class Inversion():
         v = self.get_emission_v()
         default_emission_kwargs = dict(vmin = -v, vmax = v)
         default_emission_kwargs.update(emission_kwargs)
-        _ = self.plot_total_emission(data_type="prior", ax = axes[0], **default_emission_kwargs)
-        _ = self.plot_total_emission(data_type="predicted", ax = axes[1], **default_emission_kwargs)
-        _ = self.plot_total_emission(data_type="difference", ax = axes[2], **default_emission_kwargs)
+        _ = self.plot_total_emission(data_type="prior", ax = axes[0], week=week, filter_weeks=filter_weeks, map_kwargs=map_kwargs, **default_emission_kwargs)
+        _ = self.plot_total_emission(data_type="predicted", ax = axes[1], week=week, filter_weeks=filter_weeks, map_kwargs=map_kwargs, **default_emission_kwargs)
+        _ = self.plot_total_emission(data_type="difference", ax = axes[2], week=week, filter_weeks=filter_weeks, map_kwargs=map_kwargs, **default_emission_kwargs)
         return fig, axes
 
     def plot_footprint(
@@ -557,6 +636,7 @@ class Inversion():
         ax: plt.Axes = None,
         time_ind: int = None,
         figsize: tuple[int, int] = None,
+        filter_weeks: bool = True,
         **kwargs
     ) -> tuple[plt.Figure, plt.Axes]:
         if ax is None:
@@ -566,7 +646,10 @@ class Inversion():
 
         default_kwargs = dict(cmap="jet", cbar_kwargs=dict(label = r"s m$^2$ mol$^{-1}$"))
         default_kwargs.update(kwargs)
-        footprint = self.map_on_grid(self.footprints.mean("measurement"))
+        footprint = self.footprints
+        if filter_weeks:
+            footprint = footprint.sel(week = self.get_filtered_weeks(footprint))
+        footprint = self.map_on_grid(footprint.mean("measurement"))
         if time_ind is None:
             _ = self.add_plot_on_map(ax = ax, xarr = footprint.sum([self.time_coord]), **default_kwargs)
 
@@ -592,7 +675,6 @@ class InversionGrid(Inversion):
         boundary: Boundary = None,
         concentration_key: Concentrationkey = "background_inter",
         data_outside_month: bool = False,
-        bio_only: bool = False
         ):
         """Calculates inversion of footprints and expected concentrations and offers plotting possibilities.
 
@@ -608,7 +690,6 @@ class InversionGrid(Inversion):
             boundary (Boundary, optional): region of footprint to use. Defaults to None.
             concentration_key (Concentrationkey, optional): Data with which difference to measurement xco2 is calculated. Defaults to "background_inter".
             data_outdside_month (bool, optional): Wether to also use footprint data outsinde of target month. Defaults to False.
-            bio_only (bool, optional): Whether to only use emission data of biospheric fluxes (no fire and fossile fuel). Defaults to Flase
         """
         self.lon_coarse = lon_coarse
         self.lat_coarse = lat_coarse
@@ -622,8 +703,7 @@ class InversionGrid(Inversion):
             time_unit,
             boundary,
             concentration_key,
-            data_outside_month,
-            bio_only
+            data_outside_month
         )
 
     def coarsen_data(
@@ -740,9 +820,10 @@ class InversionBioclass(Inversion):
         time_unit: Timeunit = "week",
         boundary: Boundary = None,
         concentration_key: Concentrationkey = "background_inter",
-        data_outside_month: bool = False,
-        bio_only: bool = False
+        data_outside_month: bool = False
         ):
+
+        self.n_eco: Optional[int] = None
         self.bioclass_path = bioclass_path
         self.bioclass_mask = select_boundary(self.get_bioclass_mask(), boundary)
         super().__init__(
@@ -756,11 +837,13 @@ class InversionBioclass(Inversion):
             boundary,
             concentration_key,
             data_outside_month,
-            bio_only
         )
 
     def get_bioclass_mask(self) -> xr.DataArray:
-        mask = xr.load_dataset(self.bioclass_path)["bioclass"].rename(dict(Lat="latitude", Long="longitude"))
+        mask = xr.load_dataset(self.bioclass_path)["bioclass"]
+        if "Lat" in mask.coords:
+            mask = mask.rename(dict(Lat="latitude", Long="longitude"))
+        self.n_eco = len(np.unique(mask.values))
         return mask
 
     def coarsen_data(
@@ -821,6 +904,22 @@ class InversionBioclass(Inversion):
         err = xr.ones_like(self.flux_errs) * self.flux_errs.mean()
         err = err.where(err.bioclass != 0, self.flux_errs.mean() * factor)
         return err
+
+    #MOVE TO INVERISION BIOCLASS
+def get_total(inv):
+    predictions = inv.predictions
+    if inv.time_coord == "week":
+        predictions = inv.prediction.sel(week = inv.get_filtered_weeks(inv.predictions))
+    predictions = predictions.mean(inv.time_coord)
+    mapped_predictions = inv.map_on_grid(predictions)
+    mapped_predictions = mapped_predictions.where(mapped_predictions.bioclass != 0)
+    flux_sum = mapped_predictions.mean().values
+    flux_sum = flux_sum * (inv.stop_day.astype("datetime64[s]") - inv.start_day.astype("datetime64[s]")).astype(int)
+
+    world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))[["name", "geometry"]].to_crs({'init': 'epsg:3857'})
+    area = world[world.name=="Australia"].area
+    flux_sum = area*flux_sum
+    
 
 if __name__ == "__main__":
 
