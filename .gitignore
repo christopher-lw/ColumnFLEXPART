@@ -32,3 +32,4 @@ flex_release/dummies/.ipynb_checkpoints/run_local-checkpoint.sh
 .ipynb_checkpoints/README-checkpoint.md
 */output/*
 *.vscode*
+open_data/z_to_nc.py
