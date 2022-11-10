@@ -455,7 +455,8 @@ class TcconMeasurement(ColumnMeasurement):
     def pressure_weighted_sum(self, dataset: xr.Dataset, data_var: str, with_averaging_kernel:bool) -> xr.DataArray:
         """Carries out pressure weighted sum with additional option to use averaging kernel"""
         dataarray = dataset[data_var]
-        if np.isnan(dataarray[0]):
+        # correct 0th value if surface pressure is inconsistent
+        if np.isnan(dataarray[0]).prod():
             dataarray[0] = dataarray[1]
         if with_averaging_kernel: 
             averaging_kernel = self.data.ak_co2
@@ -691,7 +692,6 @@ class FlexDataset2:
         feature_list: list[cf.NaturalEarthFeature] = [
             cf.COASTLINE,
             cf.BORDERS,
-            [cf.STATES, dict(alpha=0.1)],
         ],
         leave_lims: bool = False,
         **grid_kwargs,

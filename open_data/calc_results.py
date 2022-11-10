@@ -81,7 +81,7 @@ if __name__ == '__main__':
             xco2_inter = fd.total(ct_file=args.flux_file, allow_read=args.read_only, boundary=args.boundary, chunks=dict(time=20, pointspec=4), interpolate=True)
             xco2 = fd.total(ct_file=args.flux_file, allow_read=args.read_only, boundary=args.boundary, chunks=dict(time=20, pointspec=4), interpolate=False)
             xco2_measurement = float(fd.measurement.data.xco2)
-
+            # For total footprints to be calculated and saved
             _ = fd.footprint.total()
             _ = fd.footprint.total(interpolate=False)
 
