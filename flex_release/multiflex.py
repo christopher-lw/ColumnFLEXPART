@@ -7,7 +7,7 @@ import time
 import subprocess
 import numpy as np
 
-
+#test
 def get_queue():
     username = os.path.expanduser('~').split("/")[-1]
     command = ["squeue", "-u", username]
