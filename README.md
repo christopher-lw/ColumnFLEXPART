@@ -4,7 +4,7 @@
 
 Create a new conda environment:
 ```
-conda crate --name columnflexpart_env python
+conda create --name columnflexpart_env python
 ```
 
 Enter your environment:
