@@ -1,6 +1,6 @@
 import argparse
 import os
-from utils import config_total_parts
+from columnflexpart.utils import config_total_parts
 import numpy as np
 
 if __name__ == "__main__":

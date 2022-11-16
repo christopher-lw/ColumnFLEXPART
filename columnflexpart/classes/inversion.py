@@ -5,8 +5,8 @@ from datetime import datetime
 from tqdm.auto import tqdm
 import os
 import matplotlib.pyplot as plt
-from plotting import select_boundary, optimal_lambda
-from open_data_utils import FlexDataset2
+from columnflexpart.utils import select_boundary, optimal_lambda
+from columnflexpart.classes.flexdataset import FlexDataset
 from functools import partial
 import geopandas as gpd
 
@@ -562,7 +562,7 @@ class Inversion():
     @staticmethod
     def add_plot_on_map(ax: plt.Axes, xarr: xr.DataArray, map_kwargs: dict = dict(), **kwargs):
         xarr.plot(ax = ax, x="longitude", y="latitude", **kwargs)
-        FlexDataset2.add_map(ax = ax, **map_kwargs)
+        FlexDataset.add_map(ax = ax, **map_kwargs)
         return ax
 
     def plot_total_emission(
@@ -596,7 +596,7 @@ class Inversion():
         default_kwargs = dict(cmap = "bwr", vmin = -v, vmax = v, cbar_kwargs=dict(label=r"mol s$^{-1}$ m$^{-2}$"))
         default_kwargs.update(kwargs)
         if ax is None:
-            fig, ax = FlexDataset2.subplots(figsize=figsize)
+            fig, ax = FlexDataset.subplots(figsize=figsize)
         else:
             fig = ax.get_figure()
         
@@ -620,7 +620,7 @@ class Inversion():
         **kwargs
     ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes]]:
         if axes is None:
-            fig, axes = FlexDataset2.subplots(1,3, figsize=figsize, **kwargs)
+            fig, axes = FlexDataset.subplots(1,3, figsize=figsize, **kwargs)
         else:
             fig = axes[0].get_figure()
         v = self.get_emission_v()
@@ -640,7 +640,7 @@ class Inversion():
         **kwargs
     ) -> tuple[plt.Figure, plt.Axes]:
         if ax is None:
-            fig, ax = FlexDataset2.subplots(figsize=figsize)
+            fig, ax = FlexDataset.subplots(figsize=figsize)
         else:
             fig = ax.get_figure()
 

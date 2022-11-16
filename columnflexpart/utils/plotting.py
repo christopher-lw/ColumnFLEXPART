@@ -1,42 +1,24 @@
-from curses import noecho
-from lib2to3.pgen2.token import OP
-from tkinter import E
 import numpy as np
 import pandas as pd
-import geopandas as gpd
-import xarray as xr
 
 from pathlib import Path
 from typing import Any, Union, Literal, Optional, Callable, Iterable
-import os
-import warnings
-from functools import cache, partial
+
+from functools import cache
 from copy import deepcopy
-from tqdm.auto import tqdm
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
-from matplotlib.ticker import PercentFormatter, FormatStrFormatter
+from matplotlib.ticker import PercentFormatter
 from matplotlib import cm
 
-from open_data_utils import FlexDataset2, detrend_hawaii
 import bayesinverse
+
+from columnflexpart.classes import FlexDataset
+from columnflexpart.utils import detrend_hawaii
 
 settings = dict()
 
-path = "/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl"
-
-
-def select_boundary(
-    data: Union[xr.DataArray, xr.Dataset], 
-    boundary: Optional[tuple[float, float, float, float]]
-    ) -> Union[xr.DataArray, xr.Dataset]:
-    if not boundary is None:
-        data = data.isel(
-            longitude = (data.longitude >= boundary[0]) * (data.longitude <= boundary[1]),
-            latitude = (data.latitude >= boundary[2]) * (data.latitude <= boundary[3]) 
-        )
-    return data
+#path = "/work/bb1170/RUN/b381737/data/FLEXPART/sensitivity/partnums_unpacked/predictions_fixed.pkl"
 
 class Sensitivity():
     def __init__(self, predictions_file: str, mode=0, data_variables: list[str]=["enhancement", "background", "xco2"]):
@@ -292,7 +274,7 @@ class Sensitivity():
             _type_: _description_
         """        
         file = str(self.data["directories"][city][typ][file_ind])
-        fd = FlexDataset2(file)
+        fd = FlexDataset(file)
         heights = (fd.footprint.dataset.RELZZ2.values + fd.footprint.dataset.RELZZ1)/2
         heights = heights.compute()
         fp_sum = []
@@ -313,7 +295,7 @@ class Sensitivity():
             _type_: _description_
         """        
         file = str(self.data["directories"][city][typ][file_ind])
-        fd = FlexDataset2(file)
+        fd = FlexDataset(file)
         heights = (fd.footprint.dataset.RELZZ2.values + fd.footprint.dataset.RELZZ1)/2
         heights = heights.compute()
         fp_sum = []
@@ -408,7 +390,7 @@ class Sensitivity():
             fig = ax.get_figure()
 
         file = str(self.data["directories"][city][typ][file_ind])
-        fd = FlexDataset2(file)
+        fd = FlexDataset(file)
         fd.trajectories.load_endpoints()
         end = fd.trajectories.endpoints
         times = end.time.values
@@ -485,7 +467,7 @@ class Sensitivity():
             fig = ax.get_figure()
 
         file = str(self.data["directories"][city][typ][file_ind])
-        fd = FlexDataset2(file)
+        fd = FlexDataset(file)
         fd.trajectories.load_endpoints()
         end = fd.trajectories.endpoints
         times = end.time
@@ -769,131 +751,7 @@ class ResultsConcentrations():
 
 
     
-def calc_point(reg: bayesinverse.Regression, alpha:float) -> tuple[float, float]:
-    """Calculates points on L-curve given a regulatization parameter and the model
 
-    Args:
-        reg (bayesinverse.Regression): Regression model
-        alpha (float): Regularization weight factor
-
-    Returns:
-        tuple[float, float]: Logarithm of losses of forward model and regulatization
-    """    
-    result = reg.compute_l_curve([alpha])
-    return np.log10(result["loss_forward_model"][0]), np.log10(result["loss_regularization"][0])
-
-def euclidean_dist(P1: tuple[float, float], P2: tuple[float, float]) -> float:
-    """Calculates euclidean distanceof two points given in tuples
-
-    Args:
-        P1 (tuple[float, float]): Point 1
-        P2 (tuple[float, float]): Point 2
-
-    Returns:
-        float: distance
-    """    
-    P1 = np.array(P1)
-    P2 = np.array(P2)
-    return np.linalg.norm(P1-P2)**2
-
-def calc_curvature(Pj: tuple[float, float], Pk: tuple[float, float], Pl: tuple[float, float]) -> float:
-    """Calculates menger curvature of circle by three points
-
-    Args:
-        Pj (tuple[float, float]): Point with smallest regularization weight
-        Pk (tuple[float, float]): Point with regularization weight in between 
-        Pl (tuple[float, float]): Point with largest regulatization weight
-
-    Returns:
-        float: curvature
-    """    
-    return 2*(Pj[0] * Pk[1] + Pk[0] * Pl[1] + Pl[0] * Pj[1] - Pj[0] * Pl[1] - Pk[0] * Pj[1] - Pl[0] * Pk[1])/np.sqrt(euclidean_dist(Pj, Pk) * euclidean_dist(Pk, Pl) * euclidean_dist(Pl, Pj))
-
-def get_l2(l1: float, l4: float) -> float:
-    """Calculates position of regularization weight 2 from full boundary
-
-    Args:
-        l1 (float): Regularization weight lower boundary
-        l4 (float): Regularization weight upper boundary
-
-    Returns:
-        float: New regularization weight in between
-    """      
-    phi = (1 + np.sqrt(5))/2
-    
-    x1 = np.log10(l1)
-    x4 = np.log10(l4)
-    x2 = (x4 + phi * x1) / (1 + phi)
-    return 10**x2
-
-def get_l3(l1: float, l2: float, l4: float) -> float:
-    """Calculates position of regularization weight 3 other values
-
-    Args:
-        l1 (float): Regularization weight lower boundary
-        l2 (float): Regularization weight in between
-        l4 (float): Regularization weight upper boundary
-
-    Returns:
-        float: New regularization weight
-    """    
-    return 10**(np.log10(l1) + (np.log10(l4) - np.log10(l2)))
-
-def optimal_lambda(reg: bayesinverse.Regression, interval: tuple[float, float], threshold: float):    
-    """Find optiomal value for weigthing factor in regression. Based on https://doi.org/10.1088/2633-1357/abad0d
-
-    Args:
-        reg (bayesinverse.Regression): regression Model
-        interval (tuple[float, float]): Values of weightung factors. Values within to search 
-        threshold (float): Search stops if normalized search interval (upper boundary - lower boundary)/ upper boundary is smaller then threshold
-    """    
-    
-    l1 = interval[0]
-    l4 = interval[1]
-    l2 =  get_l2(l1, l4)
-    l3 = get_l3(l1, l2, l4)
-    l_list = [l1, l2, l3, l4]
-
-    p_list = []
-    for l in l_list:
-        p_list.append(calc_point(reg, l))
-    
-    while (l_list[3] - l_list[0]) / l_list[3] >= threshold:
-        c2 = calc_curvature(*p_list[:3])
-        c3 = calc_curvature(*p_list[1:])
-        # Find convex part of curve
-        while c3 <= 0:
-            l_list[3] = l_list[2]
-            l_list[2] = l_list[1]
-            p_list[3] = p_list[2]
-            p_list[2] = p_list[1]
-            l_list[1] = get_l2(l_list[0], l_list[3])
-            p_list[1] = calc_point(reg, l_list[1])
-            c3 = calc_curvature(*p_list[1:])
-            # print(l_list[0], l_list[3])
-        # Approach higher curvature
-        if c2 > c3:
-            # Store current guess
-            l = l_list[1]
-            # Set new boundaries
-            l_list[3] = l_list[2]
-            l_list[2] = l_list[1]
-            p_list[3] = p_list[2]
-            p_list[2] = p_list[1]
-            l_list[1] = get_l2(l_list[0], l_list[3])
-            p_list[1] = calc_point(reg, l_list[1])
-        else:
-            # Store current guess
-            l = l_list[2]
-            # Set new boundaries
-            l_list[0] = l_list[1]
-            p_list[0] = p_list[1]
-            l_list[1] = l_list[2]
-            p_list[1] = p_list[2]
-            l_list[2] = get_l3(l_list[0], l_list[1], l_list[3])
-            p_list[2] = calc_point(reg, l_list[2])
-        # print(l)
-    return l
 
 
     

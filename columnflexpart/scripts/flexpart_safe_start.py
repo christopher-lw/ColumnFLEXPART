@@ -6,7 +6,7 @@ import shutil
 from matplotlib.style import available
 import yaml
 import numpy as np
-from utils import yyyymmdd_to_datetime64, hhmmss_to_timedelta64, datetime64_to_yyyymmdd_and_hhmmss
+from columnflexpart.utils import yyyymmdd_to_datetime64, hhmmss_to_timedelta64, datetime64_to_yyyymmdd_and_hhmmss
 
 def get_paths(config: dict, releases_index: int)->list[str]:
     """Reads needed paths from the config and prepares all needed paths.
@@ -183,7 +183,6 @@ def continue_log(process, log_file):
             log.flush()
 
 ################################### MAIN ######################################
-
 if __name__ == '__main__':
     
     parser = argparse.ArgumentParser(description="Script to start FLEXPART run secure from interference with other runs.")

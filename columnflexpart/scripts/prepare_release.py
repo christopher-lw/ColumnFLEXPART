@@ -1,10 +1,12 @@
 ### file to prepare RELEASE file of a column receptor ###
 import argparse
+from pathlib import Path
 import yaml
 import os
 import shutil
 import numpy as np
-from utils import setup_column, yyyymmdd_to_datetime64
+from columnflexpart.utils import yyyymmdd_to_datetime64
+from columnflexpart.classes	 import setup_column
 
 def get_configs(config_path: str) -> tuple[str, str]:
     """Gets paths of config files
@@ -42,7 +44,7 @@ def load_dummy() -> list[str]:
     Returns:
         list: List of lines in dummy RELEASE file
     """    
-    dummy_path = "dummies/RELEASES_dummy.txt"
+    dummy_path = Path(__file__).parent / "dummies/RELEASES_dummy.txt"
     with open(dummy_path) as f:
         dummy = f.read().splitlines()
     return dummy
@@ -180,7 +182,7 @@ def save_release(dir_name: str, file_name: str, release_data: str, config: str=N
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Construction tool for FLEXPART RELAESE file of column receptor")
     parser.add_argument("config", type=str, help="path to config file")
-    parser.add_argument("--out_dir", type=str, default="output", help="path of directory for output files (default is 'output')")
+    parser.add_argument("out_dir", type=str, default="output", help="path of directory for output files")
     parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file(default is 'RELEASES', ignored if config is dir)")
     parser.add_argument("--stations_per_file", type=int, default=1, help="Number of column setups per RELEASES file. (default is 1)")
     parser.add_argument("--mdpf", action="store_true", help="(Multiple Days Per File) Flag to allow different days in one RELEASES file")

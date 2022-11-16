@@ -4,7 +4,7 @@ from xml.sax import parse
 import pandas as pd
 import numpy as np
 
-from open_data_utils import FlexDataset2
+from columnflexpart.classes import FlexDataset
 from tqdm.auto import tqdm
 
 def find_nc_files(dir, file_list=[]):
@@ -57,7 +57,7 @@ if __name__ == '__main__':
             print(f"Missing trajectories.pkl in {dir}")
             continue     
         try: 
-            fd = FlexDataset2(dir, ct_dir=args.conc_dir, ct_name_dummy=args.conc_name, chunks=dict(time=20, pointspec=4))
+            fd = FlexDataset(dir, ct_dir=args.conc_dir, ct_name_dummy=args.conc_name, chunks=dict(time=20, pointspec=4))
             fd.load_measurement(args.measurement_file, args.measurement_type)
             enhancement_inter = fd.enhancement(ct_file=args.flux_file, boundary=args.boundary, allow_read=args.read_only, interpolate=True)
             enhancement = fd.enhancement(ct_file=args.flux_file, boundary=args.boundary, allow_read=args.read_only, interpolate=False)
