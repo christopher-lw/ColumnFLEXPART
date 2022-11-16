@@ -23,4 +23,5 @@ __pycache__
 output
 .vscode
 dist
+build
 columnflexpart.egg-info
