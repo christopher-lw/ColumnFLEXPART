@@ -1,0 +1,25 @@
+# Paths
+# Path to flexpart home directory
+flex_path: "/work/bb1170/RUN/b381737/software/flexpart_v10.4_3d7eebf/"
+# Path to RELEASES files to use
+releases_path: "/home/b/b381737/python_scripts/master/flex_release/output/ACOS/releases/qualityflag/20090901-20090930/"
+# Path to options directory
+options_path: "/work/bb1170/RUN/b381737/software/flexpart_v10.4_3d7eebf/options/australia/"
+# Path to directory for output dierctories for several runs
+output_path: "/work/bb1170/RUN/b381737/data/FLEXPART/ACOS_australia/2009/09/"
+# Path to directory of input files
+input_paths: ["/work/bb1170/RUN/b381737/data/FLEXEXTRACT/EA_10x10_20090801-20100531/", "/work/bb1170/RUN/b381737/data/FLEXEXTRACT/EA_box_20090801-20100531/"] 
+# Path to AVALILABLE file for data
+available_paths: ["/work/bb1170/RUN/b381737/data/FLEXEXTRACT/EA_10x10_20090801-20100531/AVAILABLE", "/work/bb1170/RUN/b381737/data/FLEXEXTRACT/EA_box_20090801-20100531/AVAILABLE"]
+# Path to flexpart executable
+exe_path: "/work/bb1170/RUN/b381737/software/flexpart_v10.4_3d7eebf/src/FLEXPART_nest"
+
+# Run specifications
+# Simulation time in days
+sim_length: 10
+# Permitted times for start of simulation time (every start_step hours) starting at start_shift (in hours)
+# E.g. start_step: 3 and start_shift: 0 result in possible starting times at 0am, 3am, 6am ...
+# start_step: 3 and start_shift: 2 -> 2am, 5am, 8am ...
+# start_step: 5 and start_shift: 2 -> 2am, 7am, 12am ...
+start_step: 3
+start_shift: 0
