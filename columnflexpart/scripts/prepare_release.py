@@ -4,7 +4,7 @@ import yaml
 import os
 import shutil
 import numpy as np
-from master.utils.utils import setup_column, yyyymmdd_to_datetime64
+from columnflexpart.utils import setup_column, yyyymmdd_to_datetime64
 
 def get_configs(config_path: str) -> tuple[str, str]:
     """Gets paths of config files

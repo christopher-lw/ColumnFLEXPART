@@ -1,4 +1,4 @@
-from master.scripts.split_releases import convert_partposit, convert_partposit, get_output_dirs, combine_to_trajectories
+from columnflexpart.scripts.split_releases import convert_partposit, convert_partposit, get_output_dirs, combine_to_trajectories
 
 from argparse import ArgumentParser
 from tqdm.auto import tqdm

@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 import argparse
-from master.utils.utils import yyyymmdd_to_datetime, hhmmss_to_timedelta, datetime_to_yyyymmdd_and_hhmmss
+from columnflexpart.utils import yyyymmdd_to_datetime, hhmmss_to_timedelta, datetime_to_yyyymmdd_and_hhmmss
 from read_sounding_positions import get_out_names
 from timezonefinder import TimezoneFinder
 import pytz

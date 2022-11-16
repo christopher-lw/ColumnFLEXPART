@@ -8,7 +8,7 @@ import pytz
 from timezonefinder import TimezoneFinder
 import xarray as xr
 
-from master.utils.utils import datetime64_to_yyyymmdd_and_hhmmss
+from columnflexpart.utils import datetime64_to_yyyymmdd_and_hhmmss
 
 class ColumnMeasurement(ABC):
     """Class to load, hold and use column measurement data such as ACOS or TCCON data to work with flexpart output."""

@@ -6,7 +6,7 @@ import shutil
 from matplotlib.style import available
 import yaml
 import numpy as np
-from master.utils.utils import yyyymmdd_to_datetime64, hhmmss_to_timedelta64, datetime64_to_yyyymmdd_and_hhmmss
+from columnflexpart.utils import yyyymmdd_to_datetime64, hhmmss_to_timedelta64, datetime64_to_yyyymmdd_and_hhmmss
 
 def get_paths(config: dict, releases_index: int)->list[str]:
     """Reads needed paths from the config and prepares all needed paths.

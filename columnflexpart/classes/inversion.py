@@ -5,8 +5,8 @@ from datetime import datetime
 from tqdm.auto import tqdm
 import os
 import matplotlib.pyplot as plt
-from master.utils.utils import select_boundary, optimal_lambda
-from master.classes.flexdataset import FlexDataset
+from columnflexpart.utils import select_boundary, optimal_lambda
+from columnflexpart.classes import FlexDataset
 from functools import partial
 import geopandas as gpd
 

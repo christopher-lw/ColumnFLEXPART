@@ -13,8 +13,8 @@ import cartopy.feature as cf
 import cartopy.crs as ccrs
 import pandas as pd
 import xarray as xr
-from master.classes.measurement import AcosMeasurement, ColumnMeasurement, TcconMeasurement
-from master.utils.utils import calc_enhancement, select_extent, to_tuple
+from columnflexpart.classes import AcosMeasurement, ColumnMeasurement, TcconMeasurement
+from columnflexpart.utils import calc_enhancement, select_extent, to_tuple
 
 
 class FlexDataset:

@@ -1,5 +1,5 @@
 import numpy as np
-from master.utils.utils import pressure_factor
+from columnflexpart.utils import pressure_factor
 
 
 class ColumnSetup():

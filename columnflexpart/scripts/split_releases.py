@@ -5,7 +5,7 @@ import argparse
 import shutil
 import pandas as pd
 from datetime import datetime as dt
-from master.utils.utils import in_dir
+from columnflexpart.utils import in_dir
 from tqdm.auto import tqdm
 from multiprocessing import Pool
 from functools import partial

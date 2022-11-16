@@ -4,7 +4,7 @@ from xml.sax import parse
 import pandas as pd
 import numpy as np
 
-from master.classes.flexdataset import FlexDataset
+from columnflexpart.classes import FlexDataset
 from tqdm.auto import tqdm
 
 def find_nc_files(dir, file_list=[]):

@@ -13,8 +13,8 @@ from matplotlib import cm
 
 import bayesinverse
 
-from master.classes.flexdataset import FlexDataset
-from master.utils.utils import detrend_hawaii
+from columnflexpart.classes import FlexDataset
+from columnflexpart.utils import detrend_hawaii
 
 settings = dict()
 
