@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 import os
 import matplotlib.pyplot as plt
 from columnflexpart.utils import select_boundary, optimal_lambda
-from columnflexpart.classes import FlexDataset
+from columnflexpart.classes.flexdataset import FlexDataset
 from functools import partial
 import geopandas as gpd
 

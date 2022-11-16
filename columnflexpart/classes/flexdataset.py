@@ -13,7 +13,7 @@ import cartopy.feature as cf
 import cartopy.crs as ccrs
 import pandas as pd
 import xarray as xr
-from columnflexpart.classes import AcosMeasurement, ColumnMeasurement, TcconMeasurement
+from columnflexpart.classes.measurement import AcosMeasurement, ColumnMeasurement, TcconMeasurement
 from columnflexpart.utils import calc_enhancement, select_extent, to_tuple
 
 
