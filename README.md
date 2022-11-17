@@ -22,6 +22,11 @@ Install NetCDF backend:
 conda install -c conda-forge netcdf4
 ```
 
+Install Rtree for geopandas:
+```
+pip install Rtree
+```
+
 Finally install columnflexpart via pip:
 ```
 pip install columnflexpart
