@@ -39,17 +39,17 @@ def pressure_factor(
     return factor
 
 def inv_pressure_factor(
-    factor,
-    Tb = 288.15,
-    hb = 0,
-    R = 8.3144598,
-    g = 9.80665,
-    M = 0.0289644,
-    ):
+    factor: Union[float, np.ndarray],
+    Tb: float = 288.15,
+    hb: float = 0,
+    R: float = 8.3144598,
+    g: float = 9.80665,
+    M: float = 0.0289644,
+    ) -> Union[float, np.ndarray]:
     """Calculate height form inverse of barrometric height formula as described here: https://en.wikipedia.org/wiki/Barometric_formula
 
     Args:
-        h (fleat): height for factor calculation [m]
+        factor (fleat): height for factor calculation [m]
         Tb (float, optional): reference temperature [K]. Defaults to 288.15.
         hb (float, optional): height of reference [m]. Defaults to 0.
         R (float, optional): universal gas constant [J/(mol*K)]. Defaults to 8.3144598.
@@ -62,7 +62,14 @@ def inv_pressure_factor(
     h = (R * Tb) / (-g * M) *  np.log(factor) + hb
     return h
 
-def config_total_parts(config_path, output_path, total_parts):
+def config_total_parts(config_path: str, output_path: str, total_parts: str):
+    """Create a config file for prepare_release.py with different total particle number.
+
+    Args:
+        config_path (str): Path of original config.
+        output_path (str): Path for manipulated config.
+        total_parts (str): Number of particles to insert.
+    """    
     with open(config_path) as f:
         config = dict(yaml.full_load(f))
     
@@ -73,44 +80,110 @@ def config_total_parts(config_path, output_path, total_parts):
     print(f"Saved to {output_path}.")
 
 def yyyymmdd_to_datetime64(date_string: str) -> np.datetime64:
+    """Convert string of form yyyymmdd to np.datetime64.
+
+    Args:
+        date_string (str): String of date to convert 
+
+    Returns:
+        np.datetime64: Converted date
+    """    
     date = np.datetime64(f"{date_string[:4]}-{date_string[4:6]}-{date_string[6:]}")
     return date
 
 def yyyymmdd_to_datetime(date_string: str) -> datetime:
+    """Convert string of form yyyymmdd to datetime.datetime.
+
+    Args:
+        date_string (str): String of date to convert 
+
+    Returns:
+        datetimt.datetime: Converted date
+    """    
     date = yyyymmdd_to_datetime64(date_string)
     date = date.astype(datetime)
     date = datetime.combine(date, datetime.min.time())
     return date
 
 def hhmmss_to_timedelta64(time_string: str) -> np.timedelta64:
+    """Convert string of form hhmmss to np.timedelta64.
+
+    Args:
+        time_string (str): String of time to convert 
+
+    Returns:
+        np.timedelta64: Converted time
+    """    
     time = (np.timedelta64(time_string[:2], "h")
         + np.timedelta64(time_string[2:4], "m") 
         + np.timedelta64(time_string[4:], "s"))
     return time
 
 def hhmmss_to_timedelta(time_string: str) -> timedelta:
+    """Convert string of form hhmmss to datetime.timedelta.
+
+    Args:
+        time_string (str): String of time to convert 
+
+    Returns:
+        datetime.timedelta: Converted time
+    """    
     time = hhmmss_to_timedelta64(time_string)
     time = time.astype(timedelta)
     return time
 
 def datetime64_to_yyyymmdd_and_hhmmss(time: np.datetime64) -> tuple[str, str]:
+    """Convert np.datetime64 to strings of type yyyymmdd and hhmmss 
+
+    Args:
+        time (np.datetime64): time to convert
+
+    Returns:
+        tuple[str, str]: String for date and time
+    """    
     string = str(time)
     string = string.replace("-", "").replace(":", "")
     date, time = string.split("T")
     return date, time
 
 def datetime_to_yyyymmdd_and_hhmmss(time: datetime) -> tuple[str, str]:
+    """Convert datetime.datetime to strings of type yyyymmdd and hhmmss 
+
+    Args:
+        time (datetime.datetime): time to convert
+
+    Returns:
+        tuple[str, str]: String for date and time
+    """    
     time = np.datetime64(time).astype("datetime64[s]")
     date, time = datetime64_to_yyyymmdd_and_hhmmss(time)
     return date, time
 
 def in_dir(path: str, string: str) -> bool:
+    """Checks if a sting is part of the name of a file in a directory.
+
+    Args:
+        path (str): Path of directory
+        string (str): String to search for.
+
+    Returns:
+        bool: Whether string was found or not
+    """    
     for file in os.listdir(path):
         if string in file:
             return True
     return False
 
-def to_tuple(convert_arg, convert_ind):
+def to_tuple(convert_arg: list[str], convert_ind: list[int]) -> tuple:
+    """Decorator for functions that are cached but can get np.ndarrays or lists as input
+
+    Args:
+        convert_arg (list[str]): keywords for arguments to transform    
+        convert_ind (list[int]): positions of arguments to transform
+    
+    Returns:
+        tuple: converted arguments
+    """    
     def to_tuple_inner(function):
         def new_function(*args, **kwargs):
             args = list(args)
@@ -130,7 +203,17 @@ def to_tuple(convert_arg, convert_ind):
     return to_tuple_inner
 
 
-def val_to_list(types, val, expand_to=None):
+def val_to_list(types: list[type], val: Any, expand_to: Optional[int]=None):
+    """Tranforms values to list if needed.
+
+    Args:
+        types (list[type])): Classes to be converted convered to list
+        val (Any): Vlaue to convert
+        expand_to (int, optional): Expands lenght of list. Defaults to None.
+
+    Returns:
+        list: Value put in list.
+    """    
     if not isinstance(type(types), list):
         types = [types]
     if type(val) in types:
@@ -145,7 +228,17 @@ def val_to_list(types, val, expand_to=None):
 ############################
 
 
-def detrend_hawaii(dataframe: pd.DataFrame, variable: str, time_variable:str = "time"):
+def detrend_hawaii(dataframe: pd.DataFrame, variable: str, time_variable:str = "time") -> pd.DataFrame:
+    """Subtracts absolute measured concentrations from data.
+
+    Args:
+        dataframe (pd.DataFrame): Dataframe that holds variable to be detrended
+        variable (str): Key of data to detrend
+        time_variable (str, optional): Key of variable that holds times of the rows. Defaults to "time".
+
+    Returns:
+        pd.DataFrame: Dataframe with added variable_detrend column.
+    """    
 
     noaa_data = pd.read_csv(Path(__file__).parent / "data/co2_annmean_gl.csv", delimiter=",", header=0).sort_values("year")
     noaa_data.insert(1, "year_corrected", noaa_data.year.to_numpy(dtype="str").astype("datetime64") + np.timedelta64(6, "M"))
@@ -167,6 +260,15 @@ def select_boundary(
     data: Union[xr.DataArray, xr.Dataset], 
     boundary: Optional[tuple[float, float, float, float]]
     ) -> Union[xr.DataArray, xr.Dataset]:
+    """Selects data within a boundary in lungitude and latitude
+
+    Args:
+        data (Union[xr.DataArray, xr.Dataset]): xarray object that hold data
+        boundary (Optional[tuple[float, float, float, float]]): Boundary to cut out in [Left, right, lower, upper]
+
+    Returns:
+        Union[xr.DataArray, xr.Dataset]: Data within selected boundaries.
+    """    
     if not boundary is None:
         data = data.isel(
             longitude = (data.longitude >= boundary[0]) * (data.longitude <= boundary[1]),
