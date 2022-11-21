@@ -232,6 +232,18 @@ class FlexDataset:
 
 
     def _get_result_mode(self, value: Any, key: str, allow_read: bool, force_calculation: bool, boundary: list[float, float, float, float]):
+        """Determines if a result should be loaded from disc, loaded from instance or newly calculated
+
+        Args:
+            value (Any): Instance value to load
+            key (str): Name of value
+            allow_read (bool): Wheter to allow loading from memory
+            force_calculation (bool): Whether to force a calculation 
+            boundary (list[float, float, float, float]): boundary for loading the result
+
+        Returns:
+            Any: Value of key
+        """        
         readable = True
         try:
             self._load_result(key, boundary)
