@@ -17,8 +17,16 @@ from columnflexpart.classes.measurement import AcosMeasurement, ColumnMeasuremen
 from columnflexpart.utils import calc_enhancement, select_extent, to_tuple
 
 
-class FlexDataset:
-    """Class for postprocessing FLEXPART output. Includes plotting, enhancement and background calculation and metadata readout"""    
+class FlexDataset:    
+    """Class for postprocessing FLEXPART output. Includes plotting, enhancement and background calculation and metadata readout
+    
+    Attributes:
+        footprint (Footprint): Class to hold information about the footprints in given directory.
+        trajectories (Trajectories): Class to hold information about trajectories and their endpoints.
+        measurement (ColumnMeasuremnt): Class to hold information about the measuremnt of the footrpints and trajectories.
+        start (datetime.datetime): Start of the FLEXPART run.
+        stop (datetime.datetime): End of the FLEXPART run.
+        release (dict): Holds data of the RELEASES file."""    
     def __init__(self, directory: str, **kwargs):
         nc_path: str = self.get_nc_path(directory)
         self._nc_path: str = nc_path
@@ -58,7 +66,7 @@ class FlexDataset:
         else:
             warnings.warn("No trajectory information found.")
         self.measurement: Optional[ColumnMeasurement] = None
-        self.start, self.stop, self.release = self.get_metadata()
+        self.start, self.stop, self.release = self._get_metadata()
         self._background: Optional[float] = None
         self._background_layer: Optional[list[float]] = None
         self._background_inter: Optional[float] = None
@@ -92,7 +100,7 @@ class FlexDataset:
             )
         return os.path.join(directory, nc_file)
 
-    def get_metadata(self):
+    def _get_metadata(self):
         """Reads out FLEXPART output directory to extract metadata
 
         Returns:
@@ -223,10 +231,22 @@ class FlexDataset:
         return factor
 
 
-    def get_result_mode(self, value: Any, key: str, allow_read: bool, force_calculation: bool, boundary: list[float, float, float, float]):
+    def _get_result_mode(self, value: Any, key: str, allow_read: bool, force_calculation: bool, boundary: list[float, float, float, float]):
+        """Determines if a result should be loaded from disc, loaded from instance or newly calculated
+
+        Args:
+            value (Any): Instance value to load
+            key (str): Name of value
+            allow_read (bool): Wheter to allow loading from memory
+            force_calculation (bool): Whether to force a calculation 
+            boundary (list[float, float, float, float]): boundary for loading the result
+
+        Returns:
+            Any: Value of key
+        """        
         readable = True
         try:
-            self.load_result(key, boundary)
+            self._load_result(key, boundary)
         except (KeyError, FileNotFoundError):
             readable = False
         if force_calculation:
@@ -240,7 +260,7 @@ class FlexDataset:
         print(f"{key}: mode = {mode}")
         return mode
 
-    def to_pointspec_dataarray(self, data: list, name: str) -> xr.DataArray:
+    def _to_pointspec_dataarray(self, data: list, name: str) -> xr.DataArray:
         """Constructs an xr.DataArray from onedimensional data of lenght of "pointspec" and uses "pointspec" as dimension.
 
         Args:
@@ -278,11 +298,11 @@ class FlexDataset:
         Returns:
             list[float]: Enhancements per layer
         """        
-        mode = self.get_result_mode(self._enhancement_layer, "enhancement_layer", allow_read, force_calculation, boundary)
+        mode = self._get_result_mode(self._enhancement_layer, "enhancement_layer", allow_read, force_calculation, boundary)
         if mode == "from_instance":
             pass
         elif mode == "load":
-            self._enhancement_layer = self.load_result("enhancement_layer", boundary)
+            self._enhancement_layer = self._load_result("enhancement_layer", boundary)
         elif mode == "calculate":
             footprint = self.footprint.dataset.compute()
             if boundary is not None:
@@ -296,7 +316,7 @@ class FlexDataset:
                 chunks=chunks,
             )
             self._enhancement_layer = molefractions
-            self.save_result("enhancement_layer", self._enhancement_layer, boundary)
+            self._save_result("enhancement_layer", self._enhancement_layer, boundary)
         return self._enhancement_layer
 
     def background_layer(self,
@@ -314,11 +334,11 @@ class FlexDataset:
         Returns:
             list[float]: Backgrounds per layer
         """    
-        mode = self.get_result_mode(self._background_layer, "background_layer", allow_read, force_calculation, boundary)
+        mode = self._get_result_mode(self._background_layer, "background_layer", allow_read, force_calculation, boundary)
         if mode == "from_instance":
             pass
         elif mode == "load":
-            self._background_layer = self.load_result("background_layer", boundary)
+            self._background_layer = self._load_result("background_layer", boundary)
         elif mode == "calculate":
             assert (
                 boundary == self._last_boundary
@@ -330,7 +350,7 @@ class FlexDataset:
                 .values.flatten()
             )
             self._background_layer = co2_means
-            self.save_result("background_layer", self._background_layer, boundary)
+            self._save_result("background_layer", self._background_layer, boundary)
         return self._background_layer
 
     def total_layer(
@@ -353,52 +373,65 @@ class FlexDataset:
         Returns:
             list[float]: Enhancements per layer
         """        
-        mode = self.get_result_mode(self._total_layer, "total_layer", allow_read, force_calculation, boundary)
+        mode = self._get_result_mode(self._total_layer, "total_layer", allow_read, force_calculation, boundary)
         if mode == "from_instance":
             pass
         elif mode == "load":
-            self._total_layer = self.load_result("total_layer", boundary)
+            self._total_layer = self._load_result("total_layer", boundary)
         elif mode == "calculate":
             background = self.background_layer(allow_read=allow_read, force_calculation=force_calculation, boundary=boundary)
             enhancement = self.enhancement_layer(ct_file, allow_read=allow_read, force_calculation=force_calculation, chunks=chunks)
             self._total_layer = list(np.array(background) + np.array(enhancement))
-            self.save_result("total_layer", self._total_layer, boundary)
+            self._save_result("total_layer", self._total_layer, boundary)
         return self._total_layer
 
     def total(self,
         ct_file: str = None,
-        allow_read: bool=True,
         boundary: list[float, float, float, float] = None,
+        allow_read: bool=True,
         force_calculation: bool = False,
         chunks: dict = dict(time=10),
         interpolate: bool = True
     ) -> float:
+        """Calculates total XCO2.
+
+        Args:
+            ct_file (str, optional): String describing file names of CT2019B flux data before time stamp, e.g: '/path/to/data/CT2019B.flux1x1.'. Defaults to None.
+            boundary (list[float, float, float, float], optional): boundary to calculate CO2 for [longitude left, longitude right, latitude lower, latitude upper]. Defaults to None.
+            allow_read (bool, optional): Switch to allow reading the result fro the memory if possible. Defaults to True.
+            force_calculation (bool, optional): Switch to force an new calculation. Defaults to False.
+            chunks (dict, optional): Chucks to use for loaded dataset (dask). Defaults to dict(time=10).
+            interpolate (bool): Whether to interpolate to measurement levels or not. Defaults to (True).
+
+        Returns:
+            float: XCO2 of modeled measurement.
+        """    
         total_layer = self.total_layer(ct_file, allow_read, boundary, force_calculation, chunks)
         if interpolate:
-            mode = self.get_result_mode(self._total_inter, "total_inter", allow_read, force_calculation, boundary)
+            mode = self._get_result_mode(self._total_inter, "total_inter", allow_read, force_calculation, boundary)
             if mode == "from_instance":
                 pass
             elif mode == "load":
-                self._total_inter = self.load_result("total_inter", boundary)
+                self._total_inter = self._load_result("total_inter", boundary)
             elif mode == "calculate":
-                total_layer = self.to_pointspec_dataarray(total_layer, "total_layer")
+                total_layer = self._to_pointspec_dataarray(total_layer, "total_layer")
                 pressures = self.measurement.surface_pressure() * self.pressure_factor(self.release["heights"], Tb=self.measurement.surface_temperature())
                 total_layer = self.measurement.interpolate_to_levels(total_layer, "pointspec", pressures)
                 total_layer = self.measurement.add_variables(total_layer)
                 self._total_inter = self.measurement.pressure_weighted_sum(total_layer, "total_layer", with_averaging_kernel = True).values
                 self._total_inter = float(self._total_inter)
-                self.save_result("total_inter", self._total_inter, boundary)
+                self._save_result("total_inter", self._total_inter, boundary)
             return self._total_inter
         else: 
-            mode = self.get_result_mode(self._total, "total", allow_read, force_calculation, boundary)
+            mode = self._get_result_mode(self._total, "total", allow_read, force_calculation, boundary)
             if mode == "from_instance":
                 pass
             elif mode == "load":
-                self._total = self.load_result("total", boundary)
+                self._total = self._load_result("total", boundary)
             elif mode == "calculate":    
                 pressure_weights = self.pressure_weights_from_height()
                 self._total = (total_layer * pressure_weights).sum()
-                self.save_result("total", self._total, boundary)
+                self._save_result("total", self._total, boundary)
             return self._total
     
     def enhancement(
@@ -413,91 +446,105 @@ class FlexDataset:
         """Returns enhancement based on Carbon Tracker emmission data and the footprint. Is either calculated, loaded, or read from class.
 
         Args:
-            ct_file (str, optional): Name of Carbon Tracker (only shared part not the time stamp). Defaults to None.
-            p_surf (float, optional): Surface pressure in millibars. Defaults to 1013.
-            allow_read (bool, optional): Flag to allow reading of result from file . Defaults to True.
-
+            ct_file (str, optional): String describing file names of CT2019B flux data before time stamp, e.g: '/path/to/data/CT2019B.flux1x1.'. Defaults to None.
+            boundary (list[float, float, float, float], optional): boundary to calculate CO2 for [longitude left, longitude right, latitude lower, latitude upper]. Defaults to None.
+            allow_read (bool, optional): Switch to allow reading the result fro the memory if possible. Defaults to True.
+            force_calculation (bool, optional): Switch to force an new calculation. Defaults to False.
+            chunks (dict, optional): Chucks to use for loaded dataset (dask). Defaults to dict(time=10).
+            interpolate (bool): Whether to interpolate to measurement levels or not. Defaults to (True).
         Returns:
             float: Enhancement of CO2 in ppm
         """
         molefractions = self.enhancement_layer(ct_file, boundary, allow_read, force_calculation, chunks)
-        #self.save_result("enhancement_layer", molefractions, boundary)
+        #self._save_result("enhancement_layer", molefractions, boundary)
         if interpolate:
-            mode = self.get_result_mode(self._enhancement_inter, "enhancement_inter", allow_read, force_calculation, boundary)
+            mode = self._get_result_mode(self._enhancement_inter, "enhancement_inter", allow_read, force_calculation, boundary)
             if mode == "from_instance":
                 pass
             elif mode == "load":
-                self._enhancement_inter = self.load_result("enhancement_inter", boundary)
+                self._enhancement_inter = self._load_result("enhancement_inter", boundary)
             elif mode == "calculate":    
-                molefractions = self.to_pointspec_dataarray(molefractions, "enhancement_layer")
+                molefractions = self._to_pointspec_dataarray(molefractions, "enhancement_layer")
                 pressures = self.measurement.surface_pressure() * self.pressure_factor(self.release["heights"], Tb=self.measurement.surface_temperature())
                 molefractions = self.measurement.interpolate_to_levels(molefractions, "pointspec", pressures)
                 molefractions = self.measurement.add_variables(molefractions)
                 self._enhancement_inter = self.measurement.pressure_weighted_sum(molefractions, "enhancement_layer", with_averaging_kernel = False).values
                 self._enhancement_inter = float(self._enhancement_inter)
-                self.save_result("enhancement_inter", self._enhancement_inter, boundary)
+                self._save_result("enhancement_inter", self._enhancement_inter, boundary)
             return self._enhancement_inter
         
         else: 
-            mode = self.get_result_mode(self._enhancement, "enhancement", allow_read, force_calculation, boundary)
+            mode = self._get_result_mode(self._enhancement, "enhancement", allow_read, force_calculation, boundary)
             if mode == "from_instance":
                 pass
             elif mode == "load":
-                self._enhancement = self.load_result("enhancement", boundary)
+                self._enhancement = self._load_result("enhancement", boundary)
             elif mode == "calculate":    
                 pressure_weights = self.pressure_weights_from_height()
                 self._enhancement = (molefractions * pressure_weights).sum()
-                self.save_result("enhancement", self._enhancement, boundary)
+                self._save_result("enhancement", self._enhancement, boundary)
 
             return self._enhancement
 
     def background(
         self,
-        allow_read: bool = True,
         boundary: list[float, float, float, float] = None,
-        interpolate: bool = True,
+        allow_read: bool = True,
         force_calculation: bool = False,
+        interpolate: bool = True,
     ) -> float:
         """Returns background calculation in ppm based on trajectories in trajectories.pkl file. Is either loaded from file, calculated or read from class.
 
         Args:
-            allow_read (bool, optional): Flag to allow reading of result from file. Defaults to True.
+            boundary (list[float, float, float, float], optional): boundary to calculate CO2 for [longitude left, longitude right, latitude lower, latitude upper]. Defaults to None.
+            allow_read (bool, optional): Switch to allow reading the result fro the memory if possible. Defaults to True.
+            force_calculation (bool, optional): Switch to force an new calculation. Defaults to False.
+            interpolate (bool): Whether to interpolate to measurement levels or not. Defaults to (True).
 
         Returns:
             float: Background CO2 in ppm
         """
         co2_means = self.background_layer(allow_read, boundary, force_calculation)
         if interpolate:
-            mode = self.get_result_mode(self._background_inter, "background_inter", allow_read, force_calculation, boundary)
+            mode = self._get_result_mode(self._background_inter, "background_inter", allow_read, force_calculation, boundary)
             if mode == "from_instance":
                 pass
             elif mode == "load":
-                self._background_inter = self.load_result("background_inter", boundary)
+                self._background_inter = self._load_result("background_inter", boundary)
             elif mode == "calculate":
-                co2_means = self.to_pointspec_dataarray(co2_means, "background_layer")
+                co2_means = self._to_pointspec_dataarray(co2_means, "background_layer")
                 pressures = self.measurement.surface_pressure() * self.pressure_factor(self.release["heights"], Tb=self.measurement.surface_temperature())
                 co2_means = self.measurement.interpolate_to_levels(co2_means, "pointspec", pressures)
                 co2_means = self.measurement.add_variables(co2_means)
                 self._background_inter = self.measurement.pressure_weighted_sum(co2_means, "background_layer", with_averaging_kernel=True).values
                 self._background_inter = float(self._background_inter)
-                self.save_result("background_inter", self._background_inter, boundary)
+                self._save_result("background_inter", self._background_inter, boundary)
             return self._background_inter
             
         else: 
-            mode = self.get_result_mode(self._background, "background", allow_read, force_calculation, boundary)
+            mode = self._get_result_mode(self._background, "background", allow_read, force_calculation, boundary)
             if mode == "from_instance":
                 pass
             elif mode == "load":
-                self._background = self.load_result("background", boundary)
+                self._background = self._load_result("background", boundary)
             elif mode == "calculate":
                 pressure_weights = self.pressure_weights_from_height()
                 self._background = (co2_means * pressure_weights).sum()
-                self.save_result("background", self._background, boundary)
+                self._save_result("background", self._background, boundary)
             return self._background
 
-    def load_result(
-        self, name: str, boundary: list[float, float, float, float] = None
+    def _load_result(
+        self, name: str, boundary: Optional[list[float, float, float, float]] = None
     ) -> float:
+        """Loads a result based on which boundary and name is given.
+
+        Args:
+            name (str): Name of value to load.
+            boundary (list[float, float, float, float], optional): Boundary values to load result for. Defaults to None.
+
+        Returns:
+            float: Loaded result
+        """    
 
         if not boundary is None:
             boundary = [float(b) for b in boundary]
@@ -507,12 +554,19 @@ class FlexDataset:
         result = data[str(boundary)]
         return result
 
-    def save_result(
+    def _save_result(
         self,
         name: str,
         result: Union[float, Iterable],
-        boundary: list[float, float, float, float] = None,
+        boundary: Optional[list[float, float, float, float]] = None,
     ):
+        """Saves reult to dictionary for given name.
+
+        Args:
+            name (str): Name of the variable.
+            result (Union[float, Iterable]): Value of result to save.
+            boundary (list[float, float, float, float], optional): Values of bourndary the relust was calculated for. Defaults to None.
+        """        
         if not boundary is None:
             boundary = [float(b) for b in boundary]
         file = os.path.join(self._dir, f"{name}.json")
@@ -530,12 +584,18 @@ class FlexDataset:
             json.dump(data, f)
 
     def delete_results(self, names=["enhancement", "enhancement_inter", "enhancement_layer", "background", "background_inter", "background_layer", "total", "total_inter", "total_layer"]):
+        """Deletes results for values woth given names
+
+        Args:
+            names (list, optional): Names of values to delete. Defaults to ["enhancement", "enhancement_inter", "enhancement_layer", "background", "background_inter", "background_layer", "total", "total_inter", "total_layer"].
+        """        
         for name in names:
             file = os.path.join(self._dir, f"{name}.json")
             if os.path.exists(file):
                 os.remove(file)
     
     def reset(self):
+        """Reset results of instance. (sets all values to None)"""        
         self._background = None
         self._background_layer = None
         self._background_inter = None
@@ -550,7 +610,7 @@ class FlexDataset:
         """Loads column measurement of FLEXPART run
 
         Args:
-            path (Union[Path, str]): Path of Acos file unitl timestamp. E.g.: '/path/to/acos/folder/acos_LtCO2_'
+            path (Union[Path, str]): Path of Acos file unitl timestamp. E.g.: '/path/to/acos/folder/acos_LtCO2_'. For TCCON measurement give full file name.
             measurement_type (Literal["ACOS", "TCCON"]): Type of measurement to be loaded.
 
         Returns:
@@ -564,32 +624,26 @@ class FlexDataset:
             raise ValueError(f"Possible values for measurement_type are: ['ACOS', 'TCCON'] not {measurement_type}")
         self.measurement = measurement(path = path, time = self.release["start"])
         return self.measurement.data
-    
-    def get_pressures(self, heights, lon, lat):
-        pressures = self.pressure_factor(heights)
-        return pressures
-    
-    def pressure_weights_from_height(
-        self,
-    ):
-        pressures_low = self.pressure_factor(
-            self.release["boundary_low"], self.release["lon"], self.release["lat"]
-        )
-        pressures_up = self.pressure_factor(
-            self.release["boundary_up"], self.release["lon"], self.release["lat"]
-        )
-        pressure_diffs = pressures_low - pressures_up
-        pressure_weights = pressure_diffs / pressure_diffs.sum()
-        return pressure_weights
 
     class Footprint:
+        """Class to hold footprint data.
+
+        Attributes:
+            chunks (dict): Chunks for loading of footprints. Gets loaded from FlexDataset.
+            datakey (str): Key that names the footprint data in the footprint's nc file. Gets loaded from FlexDataset.
+            dataset (xr.Dataset): Holds full data of the footprint's nc file.
+            dataarray (xr.DataArray): Holds data of only the footprint data. 
+        """        
         def __init__(self, outer):
+            """Sets attributes of Footprint class.
+
+            Args:
+                outer (FlexDataset): FlexDataset of directory to read footprints from.
+            """            
             self._outer: FlexDataset = outer
             self._nc_path = outer._nc_path
             self._dir = outer._dir
-            self.extent = outer._kwargs["extent"]
             self.chunks = outer._kwargs["chunks"]
-            self.name = outer._kwargs["name"]
             self.datakey = outer._kwargs["datakey"]
 
             self._plot_kwargs = outer._plot_kwargs
@@ -604,11 +658,13 @@ class FlexDataset:
             self._total_inter_time = None
 
         def reset(self):
+            """Resets values for total footprints. (Sum of footprints over air column)"""            
             self._total = None
             self._total_inter = None
             self._total_inter_time = None
         
         def delete_results(self):
+            """Deletes results for total footprints."""            
             files = ["Footprint_total.nc", "Footprint_total_inter.nc", "Footprint_total_inter_time.nc"]
             for file in files:
                 if os.path.exists(os.path.join(self._dir, file)):
@@ -617,7 +673,7 @@ class FlexDataset:
             """Saves Footprints
 
             Args:
-                include_sums (bool, optional): _description_. Defaults to True.
+                interpolate (bool): Whether to save footprint sum with pressure weighting or without.
             """
             if interpolate:
                 inter_time_path = os.path.join(self._dir, "Footprint_total_inter_time.nc")
@@ -628,8 +684,15 @@ class FlexDataset:
                 sum_path = os.path.join(self._dir, "Footprint_total.nc")
                 self._total.to_netcdf(sum_path)
 
-        def calc_total(self, interpolate: bool = True):
-            """Calculates total Footprints"""
+        def calc_total(self, interpolate: bool = True) -> xr.DataArray:
+            """Calculates total footprint (sum or pressure weighted sum of layer footprints).
+
+            Args:
+                interpolate (bool, optional): Wheter to use pressure weighted sum of not. (True uses them). Defaults to True.
+
+            Returns:
+                xr.DataArray: Total Footprint
+            """            
             if interpolate:
                 if self._outer.measurement is None:
                     raise ValueError("Cannot calculate total footprint with interpolation without measurement data. To interpolate first use FlexDataset2.load_measurement(). To just calculate sum over heights set interpolate=False")
@@ -647,7 +710,11 @@ class FlexDataset:
                 return self._total
 
         def load_total(self, interpolate: bool = True):
-            """Loads Footprints from directory of DataSet data"""
+            """Loads Footprints from directory of DataSet data
+
+            Args:
+                interpolate (bool): Whether to load the pressure weighted version or not. Defaults to True
+            """
             if interpolate:
                 self._total_inter_time = None
                 self._total_inter = None
@@ -660,8 +727,12 @@ class FlexDataset:
                 path = os.path.join(self._dir, "Footprint_total.nc")
                 self._total = xr.load_dataarray(path)
 
-        def total(self, interpolate: bool = True):
-            """Get footprints from either loading of calculation"""
+        def total(self, interpolate: bool = True) -> xr.DataArray:
+            """Get footprints from either loading or calculation
+            
+            Args:
+                interpolate (bool): Whether to get the pressure weighted or absolute sum of footprints. Defaults to True
+            """
             if self._total is None:
                 try:
                     self.load_total(interpolate)
@@ -682,6 +753,21 @@ class FlexDataset:
             station_kwargs: dict = dict(color="black"),
             **kwargs,
         ) -> tuple[plt.Figure, plt.Axes]:
+            """Plots the total footprint.
+
+            Args:
+                ax (plt.Axes, optional): Axes to plot on. Defaults to None.
+                time (list[int], optional): Indices for times to plot. Defaults to None.
+                pointspec (list[int], optional): Indices for layers to plot. Defaults to None.
+                interpolate (bool, optional): Whether the footprint should be summed with pressure weights. Defaults to True.
+                plot_func (str, optional): Function to use if default pcolormesh should not be used. Defaults to None.
+                plot_station (bool, optional): Whether to plot stations position or not. Defaults to True.
+                add_map (bool, optional): Whether to add a map in the backgorund or not. Defaults to True.
+                station_kwargs (dict, optional): kwargs for plotting of station (handed to plt.scatter). Defaults to dict(color="black").
+
+            Returns:
+                tuple[plt.Figure, plt.Axes]: Figure and Axes with plot.
+            """        
 
             plot_kwargs = deepcopy(self._plot_kwargs)
             plot_kwargs.update(kwargs)
@@ -714,6 +800,16 @@ class FlexDataset:
         def sum(
             self, time: list[int] = None, pointspec: list[int] = None, interpolate: bool = True
         ) -> xr.DataArray:
+            """Calculates sum over height levels and times of footprint.
+
+            Args:
+                time (list[int], optional): Indices for times to select. Defaults to None.
+                pointspec (list[int], optional): Indices for height levels to select. Defaults to None.
+                interpolate (bool, optional): Whether to interpolate to measurement levels or not. Defaults to True.
+
+            Returns:
+                xr.DataArray: Sum voer selected indices.    
+            """        
             footprint = None
             if time is None and pointspec is None:
                 footprint = self.total(interpolate)
@@ -732,7 +828,19 @@ class FlexDataset:
             return footprint
 
     class Trajectories:
+        """Class to hold the trajectories' data of a FLEXPART run.
+
+        Attributes:
+            dataframe (pd.DataFrame): Holds the data for the trajectories. (From the trajectories.pkl file)
+            endpoints (pd.DataFrame): Holds the endpoints of the trajectories when they are caluclated.
+            ct_data (xr.Dataset): Concentration data from CT2019B.
+        """        
         def __init__(self, outer):
+            """Sets attributes of Trajectories class.
+
+            Args:
+                outer (FlexDataset): FlexDataset of directory to read footprints from.
+            """              
             self._outer = outer
             self._dir = outer._dir
             self._ct_dir = outer._kwargs["ct_dir"]
@@ -752,6 +860,16 @@ class FlexDataset:
             ct_dir: str = None,
             ct_dummy: str = None,
         ) -> pd.DataFrame:
+            """Calulates, loads or reads endpoints of the Trajectories for a given boundary.
+
+            Args:
+                boundary (list[float, float, float, float], optional): Boundary to set around release that marks the endpoints. Defaults to None.
+                ct_dir (str, optional): Directory for the concentration data. Defaults to None.
+                ct_dummy (str, optional): Start of the file of the concentration data until time stamp (Usually CT2019B.molefrac_glb3x2_). Defaults to None.
+
+            Returns:
+                pd.DataFrame: Endpoints of all particles.
+            """        
             if boundary is not None:
                 df_outside = self.dataframe[
                     (
@@ -815,6 +933,15 @@ class FlexDataset:
             return self.endpoints
 
         def load_ct_data(self, ct_dir: str = None, ct_dummy: str = None) -> xr.Dataset:
+            """Loads concentration data of CT2019B
+
+            Args:
+                ct_dir (str, optional): Directory for the concentration data. Defaults to None.
+                ct_dummy (str, optional): Start of the file of the concentration data until time stamp (Usually CT2019B.molefrac_glb3x2_). Defaults to None.
+
+            Returns:
+                xr.Dataset: _description_
+            """            
             if ct_dir is not None:
                 self._ct_dir = ct_dir
             if ct_dummy is not None:
@@ -835,7 +962,12 @@ class FlexDataset:
             return self.ct_data
 
         def save_endpoints(self, name: str = "endpoints.pkl", dir: str = None):
+            """Saves calculated endpoints. 
 
+            Args:
+                name (str, optional): Name for file to save data to. Defaults to "endpoints.pkl".
+                dir (str, optional): Directory to save data to. None results in the directory of the FLEXPART output. Defaults to None.
+            """            
             if dir is None:
                 dir = self._dir
             save_path = os.path.join(dir, name)
@@ -920,7 +1052,21 @@ class FlexDataset:
             station_kwargs: dict = dict(color="black"),
             **kwargs,
         ) -> tuple[plt.Figure, plt.Axes]:
+            """Plots a selecltion of the Trajectories.
 
+            Args:
+                ax (plt.Axes, optional): Axes to plot on. Defaults to None.
+                id (list[int], optional): Indices of particles to plot trajectory of. Defaults to None.
+                hours (int, optional): Maximal hours after start to plot trajectories for. Defaults to None.
+                add_map (bool, optional): Whether to add a map or not. Defaults to True.
+                add_endpoints (bool, optional): Whether to add endpoints of trajectoies or not. Defaults to False.
+                endpoint_kwargs (dict, optional): Kwargs for endpoints. (given to plt.scatter). Defaults to dict(color="black", s=100).
+                plot_station (bool, optional): Whether to plot the station of the run. Defaults to True.
+                station_kwargs (dict, optional): Kwargs for station plot. (given to plt.scatter). Defaults to dict(color="black").
+
+            Returns:
+                tuple[plt.Figure, plt.Axes]: Figure and Axes with plot.
+            """
             if ax is None:
                 fig, ax = self._outer.subplots()
             else:
