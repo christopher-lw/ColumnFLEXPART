@@ -318,13 +318,13 @@ def xr_to_gdf(xarr, *data_variables, crs="EPSG:4326"):
     return gdf
 
 def add_country_names(gdf):
-    """Add country names to GeaDataFrame
-
+    """Add counrty names to GeoDataFrame
+    
     Args:
         gdf (GeoDataFrame): to add country names to
 
     Returns:
-        GeoDataFrame: with added names
+        GeoDataFrame: with added names        
     """
     world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
     world = gpd.GeoDataFrame(world[["name"]], geometry=world.geometry)

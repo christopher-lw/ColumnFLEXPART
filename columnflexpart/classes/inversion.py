@@ -23,9 +23,45 @@ Coarsefunc = Union[Callable, tuple[Callable, Callable], str, tuple[str, str]]
 Concentrationkey = Literal["background", "background_inter", "xco2", "xco2_inter"]
 
 class Inversion():
+    """Base class to collect results of ColumnFLEXPART runs and to perform bayesian inversion.
+
+    Attributes:
+        spatial_variables (list[str]): variable That holds the keys of the variable of the spatial dimensions.
+        result_path (Pathlike): Path of file of collected results (from script calc_results.py)
+        results (pd.DataFrame): Loaded results (from script calc_results.py)
+        start (np.datetime64): Start of month to collect data from
+        stop (np.datetime64): End of month to collect data from
+        flux_path (Pathlike): Directory and filename of data until timestamp e.g. /path/to/dir/CT2019B.flux1x1.
+        time_coarse (int): By how much new time coordinate should be coarsened.
+        coarsen_boundary (str): Parameter for xr.DataArray.coarsen.
+        time_unit (Timeunit): Time unit to group to.
+        boundary (Boundary): region of footprint to use.
+        concentration_key (Concentrationkey): Data with which difference to measurement xco2 is calculated. Defaults to "background_inter".
+        data_outdside_month (bool): Wether to also use footprint data outsinde of target month. Defaults to False.
+        min_time (np.datetime64): Earliest time to take into account for inversion
+        fit_result (tuple): Holds result of the fit function of bayesinverse module
+        predictions (xr.DataArray): Holds predicted emissions.
+        predictions_flat (xr.DataArray): Holds predicted emissions flattened along the dimensions
+        prediction_errs (xr.DataArray): Holds predicted emission errors
+        prediction_errs_flat (xr.DataArray): Holds predicted emission errors flattened along the dimensions
+        l_curve_results (tuple): Holds result of bayesinverse compute_l_curve function
+        alpha (Iterable[float]): Holds alpha values used for compute_l_curve
+        reg (bayesinverse.Regression): Holds bayesinverse.Regression object of last inversion
+        time_coord (Literal["week", "dayofyear"]): Name of time coordinate to use
+        isocalendar (bool): Whether to use isocalendar or not
+        footprints (xr.DataArray): Holds processed footprints.
+        concentrations (xr.DataArray): Holds concentration enhancements of the measurements.
+        concentration_errs (xr.DataArray): Holds concentration errs of the measurements.
+        flux (xr.DataArray): Holds prior fluxes.
+        flux_errs(xr.DataArray): Holds errors of the prior fluxes.
+        coords (Any): Holds coordinates of the coarser dimensions for unflattening xarrays
+        footprints_flat (xr.DataArray): Holds processed footprints flattened along temporal and spatial dimension
+        flux_flat (xr.DataArray): Holds prior fluxes flattened along temporal and spatial dimension
+        flux_errs_flat (xr.DataArray): Holds prior fluxe errors flattened along temporal and spatial dimension
+    """    
     def __init__(
         self, 
-        spatial_valriables: list[str],
+        spatial_variables: list[str],
         result_path: Pathlike,
         month: str, 
         flux_path: Pathlike, 
@@ -39,6 +75,7 @@ class Inversion():
         """Calculates inversion of footprints and expected concentrations and offers plotting possibilities.
 
         Args:
+            spatial_variables (list[str]): variable That holds the keys of the variable of the spatial dimensions.
             result_path (Pathlike): Path of file of collected results (from script calc_results.py)
             month (str): String to specify month to load measurement and flux data from in format YYYY-MM
             flux_path (Pathlike): Directory and filename of data until timestamp e.g. /path/to/dir/CT2019B.flux1x1.
@@ -49,7 +86,7 @@ class Inversion():
             concentration_key (Concentrationkey, optional): Data with which difference to measurement xco2 is calculated. Defaults to "background_inter".
             data_outdside_month (bool, optional): Wether to also use footprint data outsinde of target month. Defaults to False.
         """
-        self.spatial_valriables = spatial_valriables
+        self.spatial_variables = spatial_variables
         self.result_path = Path(result_path)
         self.results = pd.read_pickle(self.result_path)
         self.start = np.datetime64(month).astype("datetime64[D]")
@@ -75,11 +112,11 @@ class Inversion():
         self.footprints, self.concentrations, self.concentration_errs = self.get_footprint_and_measurement(self.concentration_key)
         self.flux, self.flux_errs = self.get_flux()
 
-        self.coords = self.footprints.stack(new=[self.time_coord, *self.spatial_valriables]).new
+        self.coords = self.footprints.stack(new=[self.time_coord, *self.spatial_variables]).new
 
-        self.footprints_flat = self.footprints.stack(new=[self.time_coord, *self.spatial_valriables])
-        self.flux_flat = self.flux.stack(new=[self.time_coord, *self.spatial_valriables])
-        self.flux_errs_flat = self.flux_errs.stack(new=[self.time_coord, *self.spatial_valriables])
+        self.footprints_flat = self.footprints.stack(new=[self.time_coord, *self.spatial_variables])
+        self.flux_flat = self.flux.stack(new=[self.time_coord, *self.spatial_variables])
+        self.flux_errs_flat = self.flux_errs.stack(new=[self.time_coord, *self.spatial_variables])
 
     @staticmethod
     def get_time_coord(time_unit: Timeunit):
@@ -270,7 +307,7 @@ class Inversion():
                 if xerr.size == 1:
                     xerr = np.ones_like(flux_errs) * xerr.values
                 elif xerr.shape == self.flux_errs.shape:
-                    xerr = xerr.stack(new=[self.time_coord, *self.spatial_valriables]).values        
+                    xerr = xerr.stack(new=[self.time_coord, *self.spatial_variables]).values        
                 else:
                     xerr.values
             flux_errs = xerr
@@ -662,6 +699,12 @@ class Inversion():
 ###########################################################
 
 class InversionGrid(Inversion):
+    """Class to collect and preprocess ColumnFLEXPART for a bayesian inversion on a longitude latitude grid.
+
+    Attributes:
+        lon_coarse (int): By how much longitude should be coarsened 
+        lat_coarse (int): By how much latitude should be coarsened
+    """    
     def __init__(
         self, 
         result_path: Pathlike,
@@ -810,6 +853,13 @@ class InversionGrid(Inversion):
         return xarr
 
 class InversionBioclass(Inversion):
+    """Inversion class for projection of footprints on bioclimatic classes. 
+    Attributes:
+        n_eco (int): Number of bioclasses of the mask that is used.
+        bioclass_path (Pathlike): Path to netCDF file with bioclass mask to use.
+        bioclass_mask (Union[xr.DataArray, xr.Dataset]): Mask for assigning bioclasses. 
+
+    """    
     def __init__(self, 
         result_path: Pathlike,
         bioclass_path: Pathlike,

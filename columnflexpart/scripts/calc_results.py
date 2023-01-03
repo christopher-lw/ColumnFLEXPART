@@ -20,9 +20,8 @@ def find_nc_files(dir, file_list=[]):
                 find_nc_files(path, file_list)
     return file_list
 
-if __name__ == '__main__':
+def get_parser():
     parser = argparse.ArgumentParser(description="Script to calculate the enahancements and backgrounds of multiple flexpart runs")
-    
     parser.add_argument("dir", type=str, help="Directory beneath all flexpart runs are calculated")
     parser.add_argument("flux_file", type=str, help="File start for multiplication with footprints (until timestap)")
     parser.add_argument("conc_dir", type=str, help="Directory for concatenations for background calculation")
@@ -32,6 +31,10 @@ if __name__ == '__main__':
     parser.add_argument("--boundary", type=float, nargs="+", default=None, help="Boundary to cut out for investigation [left, right, bottom, top]")
     parser.add_argument("--read_only", action="store_true", default=False, help="Flag to only try to read saved values")
     parser.add_argument("--out_name", type=str, default="predictions.pkl", help="Name for output pickle file (defaults to 'predictions.pkl')")
+    return parser
+
+if __name__ == '__main__':
+    parser = get_parser()
     args = parser.parse_args()
     files = find_nc_files(args.dir)
 

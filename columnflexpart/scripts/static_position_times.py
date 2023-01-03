@@ -2,12 +2,12 @@ from datetime import datetime
 from pathlib import Path
 import argparse
 from columnflexpart.utils import yyyymmdd_to_datetime, hhmmss_to_timedelta, datetime_to_yyyymmdd_and_hhmmss
-from read_sounding_positions import get_out_names
+from columnflexpart.scripts.read_sounding_positions import get_out_names
 from timezonefinder import TimezoneFinder
 import pytz
 import pandas as pd
 
-if __name__ == '__main__':
+def get_parser():
     parser = argparse.ArgumentParser(description="Script to get UTC times for static measurement position at a specieal time every day.")
     parser.add_argument("start", type=str, help="Start date of times to setup YYYYMMDD")
     parser.add_argument("end", type=str, help="End dateof times to setup YYYYMMDD (day also included)")
@@ -16,7 +16,10 @@ if __name__ == '__main__':
     parser.add_argument("latitude", type=float, help="Latitude of station")
     parser.add_argument("--out_dir", type=str, default="", help="Directory form output files with times")
     parser.add_argument("--out_name", type=str, default="", help="Name for outputfile")
+    return parser
 
+if __name__ == '__main__':
+    parser = get_parser()
     args = parser.parse_args()
 
     start = yyyymmdd_to_datetime(args.start)

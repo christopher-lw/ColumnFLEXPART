@@ -306,14 +306,16 @@ def main(enumerated_dir, name_scheme, args, disable_tqdms):
             partposit_release.to_netcdf(os.path.join(save_dir, f"{file}.nc"))
         combine_to_trajectories(save_dir)
 
-if __name__ == "__main__":
-    
+def get_parser():
     parser = argparse.ArgumentParser(description="Script to spilt Flexpart output of one run with multiple stations.")
     parser.add_argument("dir", type=str, help="Flexpart output directory to split")
     parser.add_argument("outdir", type=str, help="Directory for split up data")
     parser.add_argument("--processes", type=int, default=1, help="Number of processes")
     parser.add_argument("-r", action="store_true", help="Flag to recursively search for flexpart output directories to split. All results will be saved to outdir")
-    
+    return parser
+
+if __name__ == "__main__":
+    parser = get_parser()
     args = parser.parse_args()
     disable_main_tqdms = args.processes > 1
 

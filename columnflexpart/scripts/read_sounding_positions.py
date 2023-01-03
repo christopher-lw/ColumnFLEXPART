@@ -108,7 +108,7 @@ def get_out_names(out_name: str, start: str, stop: str) -> tuple[str, str]:
     """Constructs a filename for the output depending on arguments given.
 
     Args:
-        out_name (str): name_to be set after "time_" if "" then start and stop are used for the filename
+        out_name (str): name_to be set after "time\_" if "" then start and stop are used for the filename
         start (str): start of inscluded data
         stop (str): stop of included data
 
@@ -128,7 +128,7 @@ def get_out_names(out_name: str, start: str, stop: str) -> tuple[str, str]:
     coord_filename = "coords" + extension
     return time_filename, coord_filename
 
-if __name__ == "__main__":
+def get_parser():
     parser = argparse.ArgumentParser(description="Script to convert acos data to time and coordinate files readable for prepare_release.py")
     parser.add_argument("input_directory", type=str, help="Directory from which all ACOS files are loaded")
     parser.add_argument("output_directory", type=str, help="Directory for output files")
@@ -137,6 +137,10 @@ if __name__ == "__main__":
     parser.add_argument("--stop", type=None, default="", help="End of time frame to convert. (format YYYYMMDD)")
     parser.add_argument("--out_name", type=str, default="", help="Specification for name of output files. Will be time_{name}.txt and coords_{name}.txt. If not set it will be time_{start}-{stop}.txt if start and stop are set")
     parser.add_argument("-v", action="store_true", default=False, help="Verbose mode showing debug logging")
+    return parser
+
+if __name__ == "__main__":
+    parser = get_parser()
     args = parser.parse_args()
 
     if args.v: 
