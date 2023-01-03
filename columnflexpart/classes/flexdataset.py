@@ -26,7 +26,8 @@ class FlexDataset:
         measurement (ColumnMeasuremnt): Class to hold information about the measuremnt of the footrpints and trajectories.
         start (datetime.datetime): Start of the FLEXPART run.
         stop (datetime.datetime): End of the FLEXPART run.
-        release (dict): Holds data of the RELEASES file."""    
+        release (dict): Holds data of the RELEASES file
+    """    
     def __init__(self, directory: str, **kwargs):
         nc_path: str = self.get_nc_path(directory)
         self._nc_path: str = nc_path
@@ -610,7 +611,7 @@ class FlexDataset:
         """Loads column measurement of FLEXPART run
 
         Args:
-            path (Union[Path, str]): Path of Acos file unitl timestamp. E.g.: '/path/to/acos/folder/acos_LtCO2_'. For TCCON measurement give full file name.
+            path (Union[Path, str]): Path of Acos file unitl timestamp. E.g.: '/path/to/acos/folder/acos_LtCO2\_'. For TCCON measurement give full file name.
             measurement_type (Literal["ACOS", "TCCON"]): Type of measurement to be loaded.
 
         Returns:
@@ -865,7 +866,7 @@ class FlexDataset:
             Args:
                 boundary (list[float, float, float, float], optional): Boundary to set around release that marks the endpoints. Defaults to None.
                 ct_dir (str, optional): Directory for the concentration data. Defaults to None.
-                ct_dummy (str, optional): Start of the file of the concentration data until time stamp (Usually CT2019B.molefrac_glb3x2_). Defaults to None.
+                ct_dummy (str, optional): Start of the file of the concentration data until time stamp (Usually CT2019B.molefrac\_glb3x2\_). Defaults to None.
 
             Returns:
                 pd.DataFrame: Endpoints of all particles.
@@ -937,7 +938,7 @@ class FlexDataset:
 
             Args:
                 ct_dir (str, optional): Directory for the concentration data. Defaults to None.
-                ct_dummy (str, optional): Start of the file of the concentration data until time stamp (Usually CT2019B.molefrac_glb3x2_). Defaults to None.
+                ct_dummy (str, optional): Start of the file of the concentration data until time stamp (Usually CT2019B.molefrac_glb3x2\_). Defaults to None.
 
             Returns:
                 xr.Dataset: _description_
