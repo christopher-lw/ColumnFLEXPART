@@ -4,12 +4,14 @@ from argparse import ArgumentParser
 from tqdm.auto import tqdm
 import os
 
-
-if __name__ == '__main__':
+def get_parser():
     parser = ArgumentParser(description = "Script to convert partposit files of FLEXPART output to xarray datasets and collects hole data in pickle file trajectories.pkl. Can e used on singel output directory or multiple ones")
     parser.add_argument("dir", type=str, help="Flexpart output directory to start search for partposit files.")
     parser.add_argument("-r", action="store_true", help="Flag to recursively search for flexpart output directories to split.")
-
+    return parser
+    
+if __name__ == '__main__':
+    parser = get_parser()
     args = parser.parse_args()
 
     output_dirs = get_output_dirs(args.dir, args.r)

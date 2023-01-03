@@ -182,12 +182,16 @@ def continue_log(process, log_file):
             log.write(line)
             log.flush()
 
-################################### MAIN ######################################
-if __name__ == '__main__':
-    
+def get_parser():
     parser = argparse.ArgumentParser(description="Script to start FLEXPART run secure from interference with other runs.")
     parser.add_argument("config", type=str, help="Path to config file containing information for the runs")
     parser.add_argument("releases_index", type=int, help="Index of Release to start")
+    return parser
+
+################################### MAIN ######################################
+if __name__ == '__main__':
+    
+    parser = get_parser()
     args = parser.parse_args()
 
     with open(args.config) as f:

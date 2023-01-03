@@ -3,7 +3,7 @@ import os
 from columnflexpart.utils import config_total_parts
 import numpy as np
 
-if __name__ == "__main__":
+def get_parser():
     parser = argparse.ArgumentParser(description="Manipulation tool for config files. Creates config files with desired total particle numbers")
     parser.add_argument("config", type=str, help="path to config file")
     parser.add_argument("outpath", type=str, help="path for output")
@@ -11,6 +11,9 @@ if __name__ == "__main__":
     parser.add_argument("end", type=int, help="second input for np.arange")
     parser.add_argument("step", type=int, help="third input for np.arange")
     parser.add_argument("--name", type=str, default=None, help="start of name of output files if not set name of config is used")
+    return parser
+if __name__ == "__main__":
+    parser = get_parser()
     args = parser.parse_args()
     
     part_nums = np.arange(args.start, args.end, args.step)

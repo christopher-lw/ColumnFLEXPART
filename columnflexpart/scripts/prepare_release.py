@@ -5,7 +5,7 @@ import yaml
 import os
 import shutil
 import numpy as np
-from columnflexpart.utils import yyyymmdd_to_datetime64
+from columnflexpart.utils import yyyymmdd_to_datetime64 
 from columnflexpart.classes	 import setup_column
 
 def get_configs(config_path: str) -> tuple[str, str]:
@@ -27,8 +27,10 @@ def get_configs(config_path: str) -> tuple[str, str]:
 
 def load_header(species: int=41) -> list[str]:
     """Load header for RELEASE file
+
     Args:
         species (int): index of species to use in run
+
     Returns:
         list: List of lines in header for RELEASE file
     """    
@@ -177,15 +179,19 @@ def save_release(dir_name: str, file_name: str, release_data: str, config: str=N
     if config is not None:
         shutil.copyfile(config, os.path.join(dir_name, "config.yaml"))
 
-################################### MAIN ######################################
-
-if __name__ == "__main__":
+def get_parser():
     parser = argparse.ArgumentParser(description="Construction tool for FLEXPART RELAESE file of column receptor")
     parser.add_argument("config", type=str, help="path to config file")
     parser.add_argument("out_dir", type=str, default="output", help="path of directory for output files")
     parser.add_argument("--out_name", type=str, default="RELEASES", help="name for output file(default is 'RELEASES', ignored if config is dir)")
     parser.add_argument("--stations_per_file", type=int, default=1, help="Number of column setups per RELEASES file. (default is 1)")
     parser.add_argument("--mdpf", action="store_true", help="(Multiple Days Per File) Flag to allow different days in one RELEASES file")
+    return parser
+    
+################################### MAIN ######################################
+
+if __name__ == "__main__":
+    parser = get_parser()
     args = parser.parse_args()
 
     config_dir, config_files = get_configs(args.config)
