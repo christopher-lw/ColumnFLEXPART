@@ -75,9 +75,10 @@ def group_releases(dir: str) -> tuple[str, list[list[str]], np.ndarray, np.ndarr
     release_collections = []
     lon_list = []
     lat_list = []
+    time_list = []
+    date_list = []
     index_collections = []
-    # date_list =  []
-    # time_list = []
+
     for i, release in enumerate(releases):
         lines = release.splitlines()
         for line in lines:
@@ -85,16 +86,16 @@ def group_releases(dir: str) -> tuple[str, list[list[str]], np.ndarray, np.ndarr
                 lon = float(line.split("=")[1][:-1].strip())
             if "LAT1" in line:
                 lat = float(line.split("=")[1][:-1].strip())
-            # if "IDATE1" in line:
-            #     date = float(line.split("=")[1][:-1].strip())
-            # if "ITIME1" in line:
-            #     time = float(line.split("=")[1][:-1].strip())
-        # if new coordinate appears open new collection for new release
-        if not lon in lon_list or not lat in lat_list: # or not date in date_list or not time in time_list:
+            if "IDATE1" in line:
+                date = float(line.split("=")[1][:-1].strip())
+            if "ITIME1" in line:
+                time = float(line.split("=")[1][:-1].strip())
+        # if new coordinate or release time appears open new collection for new release
+        if not lon in lon_list or not lat in lat_list or not date in date_list or not time in time_list:
             lon_list.append(lon)
             lat_list.append(lat)
-            # date_list.append(date)
-            # time_list.append(time)
+            date_list.append(date)
+            time_list.append(time)
             release_collections.append([])
             index_collections.append([])
         # add line to current release (last in release_collections) 
