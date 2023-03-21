@@ -442,7 +442,7 @@ def combine_flux_and_footprint(
         fp_co2 = xr.merge([footprint, flux])
     # 1/layer height*flux [mol/m²*s]*fp[s] -> mol/m³ -> kg/m³
     fp_co2 = (
-        1 / 100 * fp_co2.total_flux * fp_co2.spec001_mr * 0.044
+        1 / 100 * fp_co2.total_flux * fp_co2.spec001_mr * 0.029
     )  # dim : time, latitude, longitude, pointspec: 36
     # sum over time, latitude and longitude, remaining dim = layer
     fp_co2 = fp_co2.sum(dim=["time", "latitude", "longitude"])

@@ -225,7 +225,7 @@ class Inversion():
             coords = dict(measurement = measurement_id)
         )
         # merging and conversion from s m^3/kg to s m^2/mol
-        footprints = xr.concat(footprints, dim = "measurement")/100 * 0.044
+        footprints = xr.concat(footprints, dim = "measurement")/100 * 0.029
         # extra time coarsening for consistent coordinates 
         if not self.time_coarse is None:
             footprints = footprints.coarsen({self.time_coord:self.time_coarse}, boundary=self.coarsen_boundary).sum()

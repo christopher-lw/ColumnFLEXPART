@@ -101,6 +101,19 @@ class FlexDataset:
             )
         return os.path.join(directory, nc_file)
 
+    def pressure_weights_from_height( 
+        self,
+        ): 
+        pressures_low = self.pressure_factor( 
+            self.release["boundary_low"], self.release["lon"], self.release["lat"] 
+        ) 
+        pressures_up = self.pressure_factor( 
+            self.release["boundary_up"], self.release["lon"], self.release["lat"] 
+        ) 
+        pressure_diffs = pressures_low - pressures_up 
+        pressure_weights = pressure_diffs / pressure_diffs.sum() 
+        return pressure_weights
+
     def _get_metadata(self):
         """Reads out FLEXPART output directory to extract metadata
 
